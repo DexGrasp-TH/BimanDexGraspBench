@@ -43,6 +43,10 @@ pip install usd-core
 pip install imageio
 pip install 'qpsolvers[clarabel]'
 ```
+3. you may need to run the following command to avoid potential errors related to MKL such as `undefined symbol: iJIT_NotifyEvent`
+```
+conda install -c conda-forge mkl=2020.2 -y
+```
 
 ### (Optional) Object Preparation
 If you need the object assets used in [BODex](https://pku-epic.github.io/BODex/), please download our pre-processed object assets `DGN_2k_processed.zip` from [here](https://huggingface.co/datasets/JiayiChenPKU/BODex) and organize the unzipped folders as below. 
@@ -82,6 +86,11 @@ bash script/test_learning_shadow.sh
 To visualize the synthesized grasps of [Dexonomy](https://github.com/JYChen18/Dexonomy),
 ```bash
 bash script/vis_Dexonomy.sh
+```
+
+To evaluate the conditional synthesized grasps of [DexLearn](https://github.com/JYChen18/DexLearn),
+```bash
+bash script/test_learning_conditional.sh
 ```
 
 ## Changelog
