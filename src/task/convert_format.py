@@ -2,6 +2,7 @@ import os
 from glob import glob
 import logging
 import multiprocessing
+from pathlib import Path
 
 import numpy as np
 from transforms3d import quaternions as tq
@@ -38,9 +39,7 @@ def BODex(params):
     obj_name = scene_cfg["task"]["obj_name"]
     new_data["obj_scale"] = scene_cfg["scene"][obj_name]["scale"][0]
     new_data["obj_pose"] = scene_cfg["scene"][obj_name]["pose"]
-    new_data["obj_path"] = os.path.dirname(
-        os.path.dirname(scene_cfg["scene"][obj_name]["file_path"])
-    )
+    new_data["obj_path"] = os.path.dirname(os.path.dirname(scene_cfg["scene"][obj_name]["file_path"]))
     new_data["scene_path"] = scene_path
 
     if configs.hand_name == "shadow":
@@ -51,16 +50,12 @@ def BODex(params):
         )
         # Add a translation bias of palm which is included in XML but ignored in URDF
         tmp_rot = torch_quaternion_to_matrix(torch.tensor(robot_pose[:, :, 3:7]))
-        robot_pose[:, :, :3] -= (
-            (tmp_rot @ torch.tensor([0, 0, 0.034]).view(1, 1, 3, 1)).squeeze(-1).numpy()
-        )
+        robot_pose[:, :, :3] -= (tmp_rot @ torch.tensor([0, 0, 0.034]).view(1, 1, 3, 1)).squeeze(-1).numpy()
     elif configs.hand_name == "allegro":
         # Add a rotation bias of palm which is included in XML but ignored in URDF
         tmp_rot = torch_quaternion_to_matrix(torch.tensor(robot_pose[:, :, 3:7]))
         delta_rot = torch_quaternion_to_matrix(torch.tensor([0, 1, 0, 1]).view(1, 1, 4))
-        robot_pose[:, :, 3:7] = torch_matrix_to_quaternion(
-            tmp_rot @ delta_rot.transpose(-1, -2)
-        )
+        robot_pose[:, :, 3:7] = torch_matrix_to_quaternion(tmp_rot @ delta_rot.transpose(-1, -2))
     elif configs.hand_name == "ur10e_shadow":
         robot_pose = np.concatenate(
             [robot_pose[:, :, :8], robot_pose[:, :, 13:], robot_pose[:, :, 8:13]],
@@ -104,9 +99,7 @@ def Learning(params):
     scene_cfg = load_scene_cfg(raw_data["scene_path"])
     target_obj = scene_cfg["task"]["obj_name"]
     new_data = {}
-    new_data["obj_path"] = os.path.dirname(
-        os.path.dirname(scene_cfg["scene"][target_obj]["file_path"])
-    )
+    new_data["obj_path"] = os.path.dirname(os.path.dirname(scene_cfg["scene"][target_obj]["file_path"]))
     new_data["obj_pose"] = scene_cfg["scene"][target_obj]["pose"]
     new_data["obj_scale"] = scene_cfg["scene"][target_obj]["scale"][0]
     save_path = data_file.replace(configs.task.data_path, configs.grasp_dir)
@@ -118,15 +111,47 @@ def Learning(params):
     return
 
 
+def BimanSynthesis(params):
+    data_file, configs = params[0], params[1]
+
+    path_obj = Path(data_file)
+    object_code = path_obj.parent.name
+
+    raw_data = np.load(data_file, allow_pickle=True).item()
+    new_data = {}
+
+    new_data["obj_scale"] = raw_data["scale"]
+    new_data["obj_pose"] = raw_data["dual_arm_hand"]["obj_pose"]
+    new_data["obj_path"] = os.path.join(
+        "../BimanGrasp-Generation/data/object/DGN_2k/processed_data", object_code
+    )  # TODO
+    new_data["scene_path"] = ""  # TODO
+
+    joint_names = list(raw_data["dual_arm_hand"]["pregrasp_qpos"].keys())
+    pregrasp_qpos = [raw_data["dual_arm_hand"]["pregrasp_qpos"][name] for name in joint_names]
+    grasp_qpos = [raw_data["dual_arm_hand"]["grasp_qpos"][name] for name in joint_names]
+    squeeze_qpos = [raw_data["dual_arm_hand"]["squeeze_qpos"][name] for name in joint_names]
+
+    new_data["pregrasp_qpos"] = pregrasp_qpos
+    new_data["grasp_qpos"] = grasp_qpos
+    new_data["squeeze_qpos"] = squeeze_qpos
+    new_data["joint_names"] = joint_names
+
+    save_path = data_file.replace(configs.task.data_path, configs.grasp_dir)
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    np.save(save_path, new_data)
+    # print(f"Save to {save_path}")
+
+    return
+
+
 def Batched(params):
     data_file, configs = params[0], params[1]
     raw_data = np.load(data_file, allow_pickle=True).item()
     scene_cfg = load_scene_cfg(raw_data["scene_path"])
     target_obj = scene_cfg["task"]["obj_name"]
     new_data = {}
-    new_data["obj_path"] = os.path.dirname(
-        os.path.dirname(scene_cfg["scene"][target_obj]["file_path"])
-    )
+    new_data["obj_path"] = os.path.dirname(os.path.dirname(scene_cfg["scene"][target_obj]["file_path"]))
     new_data["obj_pose"] = scene_cfg["scene"][target_obj]["pose"]
     obj_scale_in_scene = scene_cfg["scene"][target_obj]["scale"][0]
     save_path = data_file.replace(configs.task.data_path, configs.grasp_dir)
@@ -147,16 +172,17 @@ def task_format(configs):
             raw_data_struct = ["**", "*_grasp.npy"]
         else:
             raw_data_struct = ["**", "*_mogen.npy"]
-    else:
+    elif configs.task.data_name == "Learning":
         raw_data_struct = ["**", "*.npy"]
-    raw_data_path_lst = glob(
-        os.path.join(configs.task.data_path, *raw_data_struct), recursive=True
-    )
+    elif configs.task.data_name == "BimanSynthesis":
+        raw_data_struct = ["**", "*.npy"]
+    else:
+        raise NotImplementedError()
+
+    raw_data_path_lst = glob(os.path.join(configs.task.data_path, *raw_data_struct), recursive=True)
     raw_file_num = len(raw_data_path_lst)
     if configs.task.max_num > 0:
-        raw_data_path_lst = np.random.permutation(sorted(raw_data_path_lst))[
-            : configs.task.max_num
-        ]
+        raw_data_path_lst = np.random.permutation(sorted(raw_data_path_lst))[: configs.task.max_num]
     logging.info(
         f"Find {raw_file_num} raw files for {os.path.join(configs.task.data_path, *raw_data_struct)}, use {len(raw_data_path_lst)}"
     )
@@ -171,5 +197,5 @@ def task_format(configs):
 
     grasp_lst = glob(os.path.join(configs.grasp_dir, "**/*.npy"), recursive=True)
     logging.info(f"Get {len(grasp_lst)} grasp data in {configs.save_dir}")
-    logging.info(f"Finish format conversion")
+    logging.info("Finish format conversion")
     return

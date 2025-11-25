@@ -9,9 +9,10 @@ simulation_metrics:
   max_pene: 0.01  # If the initial hand penetrates the object too much, regard it as a failure
   trans_thre: 0.05
   angle_thre: 15
+  approach_phase: False
 
 analytic_fc_metrics: 
-  contact_tip_only: True 
+  contact_tip_only: False # True 
   contact_threshold: 0.005
   type: ['qp', 'qp_dfc', 'q1', 'tdg', 'dfc']
 

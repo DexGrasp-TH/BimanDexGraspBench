@@ -23,13 +23,9 @@ class BaseEval:
         self.grasp_data = np.load(input_npy_path, allow_pickle=True).item()
 
         # Fix object mass by setting density
-        obj_info = load_json(
-            os.path.join(self.grasp_data["obj_path"], "info/simplified.json")
-        )
+        obj_info = load_json(os.path.join(self.grasp_data["obj_path"], "info/simplified.json"))
         obj_coef = obj_info["mass"] / (obj_info["density"] * (obj_info["scale"] ** 3))
-        new_obj_density = configs.task.obj_mass / (
-            obj_coef * (self.grasp_data["obj_scale"] ** 3)
-        )
+        new_obj_density = configs.task.obj_mass / (obj_coef * (self.grasp_data["obj_scale"] ** 3))
 
         # Build mj_spec
         self.mj_ho = MjHO(
@@ -44,6 +40,14 @@ class BaseEval:
             debug_render=configs.task.debug_render,
             debug_viewer=configs.task.debug_viewer,
         )
+
+        # convert the qpos to mujoco order
+        if ("joint_names" in self.grasp_data) and (not self.configs.hand.mocap):
+            joint_names = self.grasp_data["joint_names"]
+            mj_joint_names = self.mj_ho.get_joint_names()
+            data2mj_indices = [joint_names.index(name) for name in mj_joint_names]
+            for key in ["pregrasp_qpos", "grasp_qpos", "squeeze_qpos"]:
+                self.grasp_data[key] = np.asarray(self.grasp_data[key])[data2mj_indices]
 
         if self.configs.task.debug_viewer or self.configs.task.debug_render:
             with open("debug.xml", "w") as f:
@@ -64,17 +68,13 @@ class BaseEval:
         )
 
         contact_link_set = set()
-        contact_dist_dict = {
-            name: eval_config.contact_margin for name in self.configs.hand.finger_prefix
-        }
+        contact_dist_dict = {name: eval_config.contact_margin for name in self.configs.hand.finger_prefix}
         for c in ho_contact:
             hand_body_name = c["body1_name"]
             # Update the distance between the finger and the object
             for finger_prefix in contact_dist_dict:
                 if hand_body_name.startswith(finger_prefix):
-                    contact_dist_dict[finger_prefix] = min(
-                        contact_dist_dict[finger_prefix], c["contact_dist"]
-                    )
+                    contact_dist_dict[finger_prefix] = min(contact_dist_dict[finger_prefix], c["contact_dist"])
                     break
             # Update the name set of hand bodies in contact with the object
             if (
@@ -87,13 +87,9 @@ class BaseEval:
         contact_consistency = np.max(contact_dist_lst) - np.min(contact_dist_lst)
         contact_number = len(contact_link_set)
 
-        ho_pene = (
-            -min([c["contact_dist"] for c in ho_contact]) if len(ho_contact) > 0 else 0
-        )
+        ho_pene = -min([c["contact_dist"] for c in ho_contact]) if len(ho_contact) > 0 else 0
         ho_pene = max(ho_pene, 0)
-        self_pene = (
-            -min([c["contact_dist"] for c in hh_contact]) if len(hh_contact) > 0 else 0
-        )
+        self_pene = -min([c["contact_dist"] for c in hh_contact]) if len(hh_contact) > 0 else 0
         self_pene = max(self_pene, 0)
 
         return ho_pene, self_pene, contact_number, contact_distance, contact_consistency
@@ -102,22 +98,18 @@ class BaseEval:
         eval_config = self.configs.task.simulation_metrics
 
         # Reset to init hand qpos and check contact
+        # init_qpos = self.grasp_data["pregrasp_qpos"] if self.configs.hand.mocap else self.grasp_data["approach_qpos"][0]
         init_qpos = (
-            self.grasp_data["pregrasp_qpos"]
-            if self.configs.hand.mocap
-            else self.grasp_data["approach_qpos"][0]
-        )
-        ho_contact, hh_contact = self.mj_ho.get_contact_info(
-            init_qpos, self.grasp_data["obj_pose"]
+            self.grasp_data["approach_qpos"]
+            if self.configs.task.simulation_metrics.approach_phase
+            else self.grasp_data["pregrasp_qpos"]
         )
 
+        ho_contact, hh_contact = self.mj_ho.get_contact_info(init_qpos, self.grasp_data["obj_pose"])
+        self.mj_ho.udpate_debug_viewer()
         # Filter out bad initialization with severe penetration
-        ho_dist = (
-            min([c["contact_dist"] for c in ho_contact]) if len(ho_contact) > 0 else 0
-        )
-        hh_dist = (
-            min([c["contact_dist"] for c in hh_contact]) if len(hh_contact) > 0 else 0
-        )
+        ho_dist = min([c["contact_dist"] for c in ho_contact]) if len(ho_contact) > 0 else 0
+        hh_dist = min([c["contact_dist"] for c in hh_contact]) if len(hh_contact) > 0 else 0
         if ho_dist < -eval_config.max_pene or hh_dist < -eval_config.max_pene:
             if self.configs.task.debug_viewer or self.configs.task.debug_render:
                 print(f"Severe penetration larger than {eval_config.max_pene}")
@@ -134,16 +126,14 @@ class BaseEval:
         # Compare the resulted object pose
         latter_obj_qpos = self.mj_ho.get_obj_pose()
         delta_pos, delta_angle = np_get_delta_qpos(pre_obj_qpos, latter_obj_qpos)
-        succ_flag = (delta_pos < eval_config.trans_thre) & (
-            delta_angle < eval_config.angle_thre
-        )
+        succ_flag = (delta_pos < eval_config.trans_thre) & (delta_angle < eval_config.angle_thre)
 
         if self.configs.task.debug_viewer or self.configs.task.debug_render:
             print(succ_flag, delta_pos, delta_angle)
             if self.configs.task.debug_render:
-                debug_path = self.input_npy_path.replace(
-                    self.configs.grasp_dir, self.configs.task.debug_dir
-                ).replace(".npy", ".gif")
+                debug_path = self.input_npy_path.replace(self.configs.grasp_dir, self.configs.task.debug_dir).replace(
+                    ".npy", ".gif"
+                )
                 os.makedirs(os.path.dirname(debug_path), exist_ok=True)
                 imageio.mimsave(debug_path, self.mj_ho.debug_images)
                 print("Save GIF to ", debug_path)
@@ -166,10 +156,7 @@ class BaseEval:
             # Check whether the hand contact body name is needed
             if (
                 (hand_body_name not in self.configs.hand.valid_body_name)
-                or (
-                    eval_config.contact_tip_only
-                    and hand_body_name not in self.configs.hand.tip_body_name
-                )
+                or (eval_config.contact_tip_only and hand_body_name not in self.configs.hand.tip_body_name)
                 or (np.abs(c["contact_dist"]) > eval_config.contact_threshold)
             ):
                 continue
@@ -190,23 +177,18 @@ class BaseEval:
             return fc_metric_results
         else:
             # Average all contacts on the same hand body
-            contact_points = np.stack(
-                [np.mean(np.array(v), axis=0) for v in contact_point_dict.values()]
-            )
+            contact_points = np.stack([np.mean(np.array(v), axis=0) for v in contact_point_dict.values()])
             contact_normals = np.stack(
-                [
-                    np_normalize_vector(np.mean(np.array(v), axis=0))
-                    for v in contact_normal_dict.values()
-                ]
+                [np_normalize_vector(np.mean(np.array(v), axis=0)) for v in contact_normal_dict.values()]
             )
             # Use a smaller friction to leave some room to adjust
             miu_coef = 0.5 * np.array(self.configs.task.miu_coef)
 
             # Calculate analytic force closure metrics
             for metric_name in eval_config.type:
-                fc_metric_results[f"{metric_name}_metric"] = eval(
-                    f"calcu_{metric_name}_metric"
-                )(contact_points, contact_normals, miu_coef)
+                fc_metric_results[f"{metric_name}_metric"] = eval(f"calcu_{metric_name}_metric")(
+                    contact_points, contact_normals, miu_coef
+                )
 
         return fc_metric_results
 
@@ -233,19 +215,17 @@ class BaseEval:
                 eval_results["delta_angle"],
             ) = self._eval_simulate_under_extforce()
             # Save success data
-            succ_npy_path = self.input_npy_path.replace(
-                self.configs.grasp_dir, self.configs.succ_dir
-            )
+            succ_npy_path = self.input_npy_path.replace(self.configs.grasp_dir, self.configs.succ_dir)
             if eval_results["succ_flag"] and not os.path.exists(succ_npy_path):
                 os.makedirs(os.path.dirname(succ_npy_path), exist_ok=True)
                 os.system(
                     f"ln -s {os.path.relpath(self.input_npy_path, os.path.dirname(succ_npy_path))} {succ_npy_path}"
                 )
 
+        self.mj_ho.close_view_and_render()
+
         # Save evaluation information
-        eval_npy_path = self.input_npy_path.replace(
-            self.configs.grasp_dir, self.configs.eval_dir
-        )
+        eval_npy_path = self.input_npy_path.replace(self.configs.grasp_dir, self.configs.eval_dir)
         os.makedirs(os.path.dirname(eval_npy_path), exist_ok=True)
         for key in [
             "approach_qpos",

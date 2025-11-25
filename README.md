@@ -1,4 +1,18 @@
-# DexGraspBench
+# BimanDexGraspBench
+
+Modified from [DexGraspBench](https://github.com/JYChen18/DexGraspBench) to enable bimanual grasp simulation and filtering.
+
+## Usage
+```bash
+$ python src/main.py task=format exp_name=debug hand=dual_ur5_shadow task.data_name=BimanSynthesis task.max_num=10 task.data_path=../BimanGrasp-Generation/data/experiments/server_38/arm_filtered
+
+$ python src/mainlpy task=eval exp_name=debug hand=dual_ur5_shadow task.debug_viewer=False task.max_num=10
+```
+
+---
+---
+---
+## Original Repo's README
 
 A standard and unified simulation benchmark in [MuJoCo](https://github.com/google-deepmind/mujoco/) for dexterous grasping, aimed at **enabling a fair comparison across different grasp synthesis methods**, proposed in *BODex: Scalable and Efficient Robotic Dexterous Grasp Synthesis Using Bilevel Optimization [ICRA 2025]*.
 

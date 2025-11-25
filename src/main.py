@@ -19,13 +19,15 @@ random.seed(seed)
 
 @hydra.main(config_path="../config", config_name="base", version_base=None)
 def main(cfg: DictConfig):
-    try:
-        eval(f"task_{cfg.task_name}")(cfg)
-    except Exception as e:
-        error_traceback = traceback.format_exc()
-        logging.info(f"{error_traceback}")
-        sys.exit(1)
-    return
+    eval(f"task_{cfg.task_name}")(cfg)
+
+    # try:
+    #     eval(f"task_{cfg.task_name}")(cfg)
+    # except Exception:
+    #     error_traceback = traceback.format_exc()
+    #     logging.info(f"{error_traceback}")
+    #     sys.exit(1)
+    # return
 
 
 if __name__ == "__main__":
