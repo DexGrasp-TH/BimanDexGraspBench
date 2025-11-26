@@ -239,4 +239,5 @@ class BaseEval:
             if key in self.grasp_data.keys():
                 eval_results[key] = self.grasp_data[key]
         np.save(eval_npy_path, eval_results)
+        logging.info(f"Save eval file to {eval_npy_path}.")
         return

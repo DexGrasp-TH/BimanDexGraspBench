@@ -114,18 +114,16 @@ def Learning(params):
 def BimanSynthesis(params):
     data_file, configs = params[0], params[1]
 
-    path_obj = Path(data_file)
-    object_code = path_obj.parent.name
+    # path_obj = Path(data_file)
+    # object_code = path_obj.parent.name
 
     raw_data = np.load(data_file, allow_pickle=True).item()
     new_data = {}
 
     new_data["obj_scale"] = raw_data["scale"]
     new_data["obj_pose"] = raw_data["dual_arm_hand"]["obj_pose"]
-    new_data["obj_path"] = os.path.join(
-        "../BimanGrasp-Generation/data/object/DGN_2k/processed_data", object_code
-    )  # TODO
-    new_data["scene_path"] = ""  # TODO
+    new_data["obj_path"] = os.path.join("../BimanGrasp-Generation/", raw_data["obj_path"])
+    new_data["scene_path"] = ""  # TODO: support scene_path for NN learning.
 
     joint_names = list(raw_data["dual_arm_hand"]["pregrasp_qpos"].keys())
     pregrasp_qpos = [raw_data["dual_arm_hand"]["pregrasp_qpos"][name] for name in joint_names]
