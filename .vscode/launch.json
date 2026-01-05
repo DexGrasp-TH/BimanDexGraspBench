@@ -8,11 +8,11 @@
       "program": "${file}",
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
-      "args": ["task=format", "exp_name=debug", "hand=dual_ur5_shadow", "task.data_name=BimanSynthesis", 
-        "task.max_num=1", "task.data_path=../BimanGrasp-Generation/data/experiments/server_38/arm_filtered"]
+      // "args": ["task=format", "exp_name=debug_1", "hand=dual_ur5_shadow", "task.data_name=BimanSynthesis", 
+      //   "task.max_num=1", "task.data_path=../BimanGrasp-Generation/data/experiments/server_39/arm_filtered"]
       
-      // "args": ["task=eval", "exp_name=debug", "hand=dual_ur5_shadow", "task.debug_viewer=True", 
-      //          "task.max_num=10"]
+      "args": ["task=eval", "exp_name=debug_1", "hand=dual_ur5_shadow", "task.debug_viewer=True", 
+               "task.max_num=10"]
 
     }
   ]

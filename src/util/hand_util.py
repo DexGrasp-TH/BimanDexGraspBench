@@ -37,8 +37,10 @@ class MjHO:
             self.spec.add_texture(
                 type=mujoco.mjtTexture.mjTEXTURE_SKYBOX,
                 builtin=mujoco.mjtBuiltin.mjBUILTIN_GRADIENT,
-                rgb1=[0.3, 0.5, 0.7],
-                rgb2=[0.3, 0.5, 0.7],
+                # rgb1=[0.3, 0.5, 0.7],
+                # rgb2=[0.3, 0.5, 0.7],
+                rgb1=[1.0, 1.0, 1.0],
+                rgb2=[1.0, 1.0, 1.0],
                 width=512,
                 height=512,
             )
