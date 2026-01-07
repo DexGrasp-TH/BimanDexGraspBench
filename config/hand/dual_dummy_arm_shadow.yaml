@@ -1,4 +1,4 @@
-xml_path: assets/hand/dual_ur5_shadow/dual_ur5_shadow.xml 
+xml_path: assets/hand/dual_dummy_arm_shadow/dual_dummy_arm_shadow.xml 
 mocap: False
 # bimanual: True
 exclude_table_contact:

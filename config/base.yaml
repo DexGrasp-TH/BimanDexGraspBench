@@ -1,5 +1,5 @@
 skip: False
-n_worker: 96    
+n_worker: 8    
 setting: fc # or tabletop
 
 exp_name: debug

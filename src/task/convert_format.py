@@ -93,6 +93,38 @@ def BODex(params):
     return
 
 
+def BimanBODex(params):
+    data_file, configs = params[0], params[1]
+
+    raw_data = np.load(data_file, allow_pickle=True).item()
+    robot_pose = raw_data["robot_pose"][0]
+    joint_names = raw_data["joint_names"]
+    scene_path = raw_data["scene_path"][0].split("src/curobo/content/")[1]
+    scene_cfg = load_scene_cfg(scene_path)
+    obj_name = scene_cfg["task"]["obj_name"]
+
+    new_data = {}
+    new_data["obj_scale"] = scene_cfg["scene"][obj_name]["scale"][0]
+    new_data["obj_pose"] = scene_cfg["scene"][obj_name]["pose"]
+    new_data["obj_path"] = os.path.dirname(os.path.dirname(scene_cfg["scene"][obj_name]["file_path"]))
+    new_data["scene_path"] = scene_path
+
+    for i in range(len(robot_pose)):
+        new_data["pregrasp_qpos"] = robot_pose[i, 0]
+        new_data["grasp_qpos"] = robot_pose[i, 1]
+        new_data["squeeze_qpos"] = robot_pose[i, 2]
+        new_data["joint_names"] = joint_names
+
+        save_path = (
+            data_file.replace(configs.task.data_path, configs.grasp_dir)
+            .replace("_grasp.npy", f"/{i}_grasp.npy")
+            .replace("_mogen.npy", f"/{i}_mogen.npy")
+        )
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        np.save(save_path, new_data)
+    return
+
+
 def Learning(params):
     data_file, configs = params[0], params[1]
     raw_data = np.load(data_file, allow_pickle=True).item()
@@ -175,6 +207,8 @@ def task_format(configs):
         raw_data_struct = ["**", "*.npy"]
     elif configs.task.data_name == "BimanSynthesis":
         raw_data_struct = ["**", "*.npy"]
+    elif configs.task.data_name == "BimanBODex":
+        raw_data_struct = ["**", "*_grasp.npy"]
     else:
         raise NotImplementedError()
 
@@ -190,9 +224,16 @@ def task_format(configs):
         return
 
     iterable_params = zip(raw_data_path_lst, [configs] * len(raw_data_path_lst))
-    with multiprocessing.Pool(processes=configs.n_worker) as pool:
-        result_iter = pool.imap_unordered(eval(configs.task.data_name), iterable_params)
-        results = list(result_iter)
+
+    if configs.task.debug:
+        results = []
+        for params in iterable_params:
+            results.append(eval(configs.task.data_name)(params))
+    else:
+        # CPU parallel
+        with multiprocessing.Pool(processes=configs.n_worker) as pool:
+            result_iter = pool.imap_unordered(eval(configs.task.data_name), iterable_params)
+            results = list(result_iter)
 
     grasp_lst = glob(os.path.join(configs.grasp_dir, "**/*.npy"), recursive=True)
     logging.info(f"Get {len(grasp_lst)} grasp data in {configs.save_dir}")

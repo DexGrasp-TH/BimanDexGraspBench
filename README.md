@@ -66,3 +66,15 @@ $ python src/main.py task=eval exp_name=<EXP_NAME> hand=dual_ur5_shadow task.deb
 ```
 
 The filtered successful grasp files are located in `output/<EXP_NAME>_dual_ur5_shadow/succgrasp`.
+
+
+#### BimanBODEx
+```bash
+# convert data format
+# e.g.
+$ python src/main.py task=format exp_name=<EXP_NAME> hand=dual_dummy_arm_shadow task.data_name=BimanBODex task.max_num=-1 task.data_path=../../project_any_scale_grasp/BimanBODex/src/curobo/content/assets/output/sim_dual_dummy_arm_shadow/fc/data_0/graspdata
+
+# simulation-based evaluation and filtering
+# e.g.
+$ python src/main.py task=eval exp_name=<EXP_NAME> hand=dual_dummy_arm_shadow task.debug_viewer=False task.max_num=-1
+```
