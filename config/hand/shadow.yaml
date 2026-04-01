@@ -1,4 +1,4 @@
-xml_path: assets/hand/shadow/right_hand.xml 
+xml_path: assets/hand/shadow/right_hand_v2.xml 
 mocap: True
 exclude_table_contact: 
 color: [0.863157, 0.0865002, 0.0802199, 1.0]
@@ -12,3 +12,4 @@ valid_body_name: [
     'rh_thproximal', 'rh_thmiddle', 'rh_thdistal',
 ]
 tip_body_name: ['rh_ffdistal','rh_mfdistal','rh_rfdistal','rh_lfdistal','rh_thdistal']
+wrist_body_names: ['rh_palm']

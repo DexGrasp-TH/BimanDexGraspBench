@@ -1,6 +1,6 @@
 skip: False
 n_worker: 8    
-setting: fc # or tabletop
+setting: tabletop # fc / tabletop
 
 exp_name: debug
 save_root: output

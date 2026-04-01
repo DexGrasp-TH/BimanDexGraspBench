@@ -49,11 +49,11 @@ def BODex(params):
             axis=-1,
         )
         # Add a translation bias of palm which is included in XML but ignored in URDF
-        tmp_rot = torch_quaternion_to_matrix(torch.tensor(robot_pose[:, :, 3:7]))
+        tmp_rot = torch_quaternion_to_matrix(torch.tensor(robot_pose[:, :, 3:7], dtype=torch.float32))
         robot_pose[:, :, :3] -= (tmp_rot @ torch.tensor([0, 0, 0.034]).view(1, 1, 3, 1)).squeeze(-1).numpy()
     elif configs.hand_name == "allegro":
         # Add a rotation bias of palm which is included in XML but ignored in URDF
-        tmp_rot = torch_quaternion_to_matrix(torch.tensor(robot_pose[:, :, 3:7]))
+        tmp_rot = torch_quaternion_to_matrix(torch.tensor(robot_pose[:, :, 3:7], dtype=torch.float32))
         delta_rot = torch_quaternion_to_matrix(torch.tensor([0, 1, 0, 1]).view(1, 1, 4))
         robot_pose[:, :, 3:7] = torch_matrix_to_quaternion(tmp_rot @ delta_rot.transpose(-1, -2))
     elif configs.hand_name == "ur10e_shadow":
@@ -63,10 +63,10 @@ def BODex(params):
         )
     elif configs.hand_name == "leap":
         # Add a translation and rotation bias of palm which is included in XML but ignored in URDF
-        tmp_rot = torch_quaternion_to_matrix(torch.tensor(robot_pose[:, :, 3:7]))
+        tmp_rot = torch_quaternion_to_matrix(torch.tensor(robot_pose[:, :, 3:7], dtype=torch.float32))
         delta_rot = torch_quaternion_to_matrix(torch.tensor([0, 1, 0, 0]).view(1, 1, 4))
         tmp_rot = tmp_rot @ delta_rot.transpose(-1, -2)
-        robot_pose[:, :, 3:7] = torch_matrix_to_quaternion(tmp_rot)
+        robot_pose[:, :, 3:7] = torch_matrix_to_quaternion(tmp_rot).numpy()
         robot_pose[:, :, :3] -= (tmp_rot @ torch.tensor([0, 0, 0.1])).numpy()
         pass
     else:
@@ -109,10 +109,41 @@ def BimanBODex(params):
     new_data["obj_path"] = os.path.dirname(os.path.dirname(scene_cfg["scene"][obj_name]["file_path"]))
     new_data["scene_path"] = scene_path
 
+    # TODO: remove this by making the URDF in BimanBODex consistent with the XML in BimanDexGraspBench
+    if configs.hand_name == "shadow":
+        # # Add a translation bias of palm which is included in XML but ignored in URDF
+        # robot_pose_torch = torch.tensor(robot_pose, dtype=torch.float32)
+        # tmp_rot = torch_quaternion_to_matrix(robot_pose_torch[:, :, 3:7])
+        # robot_pose_torch[:, :, :3] -= (
+        #     tmp_rot @ torch.tensor([0, 0, 0.034], dtype=torch.float32).view(1, 1, 3, 1)
+        # ).squeeze(-1)
+        # robot_pose = robot_pose_torch.numpy()
+        pass
+    elif configs.hand_name == "allegro":
+        # Add a rotation bias of palm which is included in XML but ignored in URDF
+        robot_pose_torch = torch.tensor(robot_pose, dtype=torch.float32)
+        tmp_rot = torch_quaternion_to_matrix(robot_pose_torch[:, :, 3:7])
+        delta_rot = torch_quaternion_to_matrix(torch.tensor([0, 1, 0, 1], dtype=torch.float32).view(1, 1, 4))
+        robot_pose_torch[:, :, 3:7] = torch_matrix_to_quaternion(tmp_rot @ delta_rot.transpose(-1, -2))
+        robot_pose = robot_pose_torch.numpy()
+    elif configs.hand_name == "leap":
+        # Add a translation and rotation bias of palm which is included in XML but ignored in URDF
+        robot_pose_torch = torch.tensor(robot_pose, dtype=torch.float32)
+        tmp_rot = torch_quaternion_to_matrix(robot_pose_torch[:, :, 3:7])
+        delta_rot = torch_quaternion_to_matrix(torch.tensor([0, 1, 0, 0], dtype=torch.float32).view(1, 1, 4))
+        tmp_rot = tmp_rot @ delta_rot.transpose(-1, -2)
+        robot_pose_torch[:, :, 3:7] = torch_matrix_to_quaternion(tmp_rot)
+        robot_pose_torch[:, :, :3] -= (
+            tmp_rot @ torch.tensor([0, 0, 0.1], dtype=torch.float32).view(1, 1, 3, 1)
+        ).squeeze(-1)
+        robot_pose = robot_pose_torch.numpy()
+    else:
+        pass
+
     for i in range(len(robot_pose)):
-        new_data["pregrasp_qpos"] = robot_pose[i, 0]
-        new_data["grasp_qpos"] = robot_pose[i, 1]
-        new_data["squeeze_qpos"] = robot_pose[i, 2]
+        new_data["pregrasp_qpos"] = np.array(robot_pose[i, 0])
+        new_data["grasp_qpos"] = np.array(robot_pose[i, 1])
+        new_data["squeeze_qpos"] = np.array(robot_pose[i, 2])
         new_data["joint_names"] = joint_names
 
         save_path = (

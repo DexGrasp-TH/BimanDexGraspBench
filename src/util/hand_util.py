@@ -33,7 +33,9 @@ class MjHO:
         self.spec.option.timestep = 0.004
         self.spec.option.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
         self.spec.option.disableflags = mujoco.mjtDisableBit.mjDSBL_GRAVITY
-        if debug_render or debug_viewer:
+        self.b_debug_render = debug_render
+        self.b_debug_viewer = debug_viewer
+        if self.b_debug_render or self.b_debug_viewer:
             self.spec.add_texture(
                 type=mujoco.mjtTexture.mjTEXTURE_SKYBOX,
                 builtin=mujoco.mjtBuiltin.mjBUILTIN_GRADIENT,
@@ -63,9 +65,10 @@ class MjHO:
         self.model = self.spec.compile()
         self.data = mujoco.MjData(self.model)
 
-        mujoco.mj_resetDataKeyframe(self.model, self.data, 0)
-        mujoco.mj_forward(self.model, self.data)
+        self.ext_force_on_obj = None
+        self.target_qpos_a = np.zeros((self.model.nu))
 
+    def _init_after_first_fk(self):
         # For ctrl
         qpos2ctrl_matrix = np.zeros((self.model.nu, self.model.nv))
         mujoco.mju_sparse2dense(
@@ -76,12 +79,11 @@ class MjHO:
             self.data.moment_colind,
         )
         self._qpos2ctrl_matrix = qpos2ctrl_matrix[..., :-6]
-        self.ext_force_on_obj = None
-        self.target_qpos_a = np.zeros((self.model.nu))
 
+    def _init_viewer_and_render(self):
         self.debug_viewer = None
         self.debug_render = None
-        if debug_viewer:
+        if self.b_debug_viewer:
             self.debug_viewer = mujoco.viewer.launch_passive(self.model, self.data)
 
             self.debug_viewer.cam.lookat[:] = [0.5, 0.0, -0.2]
@@ -89,10 +91,7 @@ class MjHO:
             self.debug_viewer.cam.azimuth = 180  # 水平旋转角度，单位度
             self.debug_viewer.cam.elevation = -20  # 垂直旋转角度，单位度
 
-            self.debug_viewer.sync()
-            # pdb.set_trace()
-
-        if debug_render:
+        if self.b_debug_render:
             self.debug_render = mujoco.Renderer(self.model, 480, 640)
             self.debug_options = mujoco.MjvOption()
             mujoco.mjv_defaultOption(self.debug_options)
@@ -100,6 +99,7 @@ class MjHO:
             self.debug_options.flags[mujoco.mjtVisFlag.mjVIS_CONTACTFORCE] = True
             self.debug_options.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = False
             self.debug_images = []
+
         return
 
     def reset(self):
@@ -204,7 +204,7 @@ class MjHO:
 
         # Set pose and qpos for hand and object
         self.reset_pose_qpos(hand_qpos, obj_pose)
-        self.udpate_debug_viewer()
+        # self.udpate_debug_viewer()
 
         object_id = self.model.nbody - 1
         hand_id = self.model.nbody - 2
@@ -283,10 +283,11 @@ class MjHO:
         """
         self.ext_force_on_obj = ext_force
 
-    def reset_pose_qpos(self, hand_qpos, obj_pose):
+    def reset_pose_qpos(self, hand_qpos, obj_pose, set_ctrl=True):
         # set key frame
         self.model.key_qpos[0] = np.concatenate([hand_qpos, obj_pose], axis=0)
-        self.model.key_ctrl[0] = self._qpos2ctrl(hand_qpos)
+        if set_ctrl:
+            self.model.key_ctrl[0] = self._qpos2ctrl(hand_qpos)
         self.model.key_qvel[0] = 0
         self.model.key_act[0] = 0
         if self.hand_mocap:

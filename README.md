@@ -30,8 +30,8 @@ Modified from [DexGraspBench](https://github.com/JYChen18/DexGraspBench) to enab
     ```
 1. Install the python environment via [Anaconda](https://www.anaconda.com/). 
     ```bash
-    conda create -n DGBench python=3.10 
-    conda activate DGBench
+    conda create -n BiDGBench python=3.10 
+    conda activate BiDGBench
     pip install numpy==1.26.4
     conda install pytorch==2.2.2 pytorch-cuda=12.1 -c pytorch -c nvidia 
     pip install mujoco==3.3.2
@@ -43,38 +43,58 @@ Modified from [DexGraspBench](https://github.com/JYChen18/DexGraspBench) to enab
     pip install usd-core
     pip install imageio
     pip install 'qpsolvers[clarabel]'
+    pip install -e ./third_party/pytorch_kinematics
     ```
 1. You may need to run the following command to avoid potential errors related to MKL such as `undefined symbol: iJIT_NotifyEvent`
     ```bash
     conda install -c conda-forge mkl=2020.2 -y
     ```
 
+## USage
+
 ### Robot Preparation
 
 The MJCF file of the dual-arm-hand robots should be provided in `assets/hand/`. The configuration file should be provided in `config/hand/`.
 
-### Running
-
+Before running, check the consistency between URDF and MJCF:
 ```bash
-# convert data format
-# e.g.
-$ python src/main.py task=format exp_name=<EXP_NAME> hand=dual_ur5_shadow task.data_name=BimanSynthesis task.max_num=-1 task.data_path=../BimanGrasp-Generation/data/experiments/<SYN_EXP_NAME>/arm_filtered
-
-# simulation-based evaluation and filtering
-# e.g.
-$ python src/main.py task=eval exp_name=<EXP_NAME> hand=dual_ur5_shadow task.debug_viewer=False task.max_num=-1
+$ python script/check_urdf_mjcf.py --urdf <path_to_urdf> --mjcf <path_to_mjcf>
 ```
 
-The filtered successful grasp files are located in `output/<EXP_NAME>_dual_ur5_shadow/succgrasp`.
+### Filtering of BimanBODex
 
-
-#### BimanBODEx
 ```bash
 # convert data format
-# e.g.
-$ python src/main.py task=format exp_name=<EXP_NAME> hand=dual_dummy_arm_shadow task.data_name=BimanBODex task.max_num=-1 task.data_path=../../project_any_scale_grasp/BimanBODex/src/curobo/content/assets/output/sim_dual_dummy_arm_shadow/fc/data_0/graspdata
+$ python src/main.py task=format exp_name=<EXP_NAME> hand=<HAND> task.data_name=BimanBODex task.max_num=-1 task.data_path=../BimanBODex/src/curobo/content/assets/output/<PATH>/graspdata
+```
 
+```bash
 # simulation-based evaluation and filtering
-# e.g.
-$ python src/main.py task=eval exp_name=<EXP_NAME> hand=dual_dummy_arm_shadow task.debug_viewer=False task.max_num=-1
+$ python src/main.py task=eval exp_name=<EXP_NAME> hand=<HAND> task.debug_viewer=False task.max_num=-1
+```
+
+Examples:
+
+```bash
+# Right-full
+$ python src/main.py task=format exp_name=minitest_right_full hand=shadow task.data_name=BimanBODex task.max_num=-1 task.data_path=../BimanBODex/src/curobo/content/assets/output/sim_shadow/tabletop_full/minitest/graspdata
+$ python src/main.py task=eval exp_name=minitest_right_full hand=shadow task.debug_viewer=False task.max_num=-1
+
+# Both-full
+$ python src/main.py task=format exp_name=minitest_both_full hand=dual_dummy_arm_shadow task.data_name=BimanBODex task.max_num=-1 task.data_path=../BimanBODex/src/curobo/content/assets/output/sim_dual_dummy_arm_shadow/tabletop_full/minitest/graspdata
+$ python src/main.py task=eval exp_name=minitest_both_full hand=dual_dummy_arm_shadow task.debug_viewer=False task.max_num=-1
+```
+
+**Batch Processing**: process all grasp types (right_two, right_three, right_full, both_three, both_full) at once:
+
+```bash
+$ ./script/process_all_grasp_types_shadow.sh <RUN_NAME>
+# e.g.: $ ./script/process_all_grasp_types_shadow.sh minitest
+```
+
+**Concatenate Dataset**: combine successful grasps from all grasp types into a unified dataset for NN training:
+
+```bash
+$ python script/concatenate_dataset.py --run_name <RUN_NAME> --output_root <OUTPUT_DIR>
+# e.g.: $ python script/concatenate_dataset.py --run_name minitest --output_root /data/dataset/AnyScaleGrasp/BimanBODex
 ```
