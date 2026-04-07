@@ -21,14 +21,6 @@ random.seed(seed)
 def main(cfg: DictConfig):
     eval(f"task_{cfg.task_name}")(cfg)
 
-    # try:
-    #     eval(f"task_{cfg.task_name}")(cfg)
-    # except Exception:
-    #     error_traceback = traceback.format_exc()
-    #     logging.info(f"{error_traceback}")
-    #     sys.exit(1)
-    # return
-
 
 if __name__ == "__main__":
     main()

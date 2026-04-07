@@ -1,14 +1,14 @@
-# xml_path: third_party/mujoco_menagerie/leap_hand/right_hand.xml
-xml_path: assets/hand/leap/right_hand.xml
+xml_path: assets/hand/leap/leap.xml
 mocap: True
 exclude_table_contact: 
 color: [0.132868, 0.496933, 0.144129, 1.0]
-finger_prefix: ['if','mf', 'rf', 'th']
+finger_prefix: ['rh_fingertip_1', 'rh_fingertip_2', 'rh_fingertip_3', 'rh_thumb_fingertip']
 valid_body_name: [
-    'palm', 
-    'if_px', 'if_md', 'if_ds',
-    'mf_px', 'mf_md', 'mf_ds',
-    'rf_px', 'rf_md', 'rf_ds',
-    'th_px', 'th_md', 'th_ds',
+    'rh_palm_lower',
+    'rh_mcp_joint', 'rh_pip', 'rh_dip', 'rh_fingertip_base', 'rh_fingertip_1',
+    'rh_mcp_joint_2', 'rh_pip_2', 'rh_dip_2', 'rh_fingertip_base_2', 'rh_fingertip_2',
+    'rh_mcp_joint_3', 'rh_pip_3', 'rh_dip_3', 'rh_fingertip_base_3', 'rh_fingertip_3',
+    'rh_pip_4', 'rh_thumb_pip', 'rh_thumb_dip', 'rh_thumb_fingertip_base', 'rh_thumb_fingertip',
 ]
-tip_body_name: ['if_ds','mf_ds','rf_ds','th_ds']
+tip_body_name: ['rh_fingertip_1', 'rh_fingertip_2', 'rh_fingertip_3', 'rh_thumb_fingertip']
+wrist_body_names: ['rh_palm_lower']

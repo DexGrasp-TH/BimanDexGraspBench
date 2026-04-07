@@ -11,20 +11,18 @@ from .eval_func import *
 
 def safe_eval_one(params):
     input_npy_path, configs = params[0], params[1]
-    # try:
+    try:
+        if configs.hand.mocap:
+            eval_func_name = f"{configs.setting}MocapEval"
+        else:
+            eval_func_name = f"{configs.setting}ArmEval"
 
-    if configs.hand.mocap:
-        eval_func_name = f"{configs.setting}MocapEval"
-    else:
-        eval_func_name = f"{configs.setting}ArmEval"
-
-    eval(eval_func_name)(input_npy_path, configs).run()
-    return
-
-    # except Exception:
-    #     error_traceback = traceback.format_exc()
-    #     logging.warning(f"{error_traceback}")
-    #     return
+        eval(eval_func_name)(input_npy_path, configs).run()
+        return
+    except Exception:
+        error_traceback = traceback.format_exc()
+        logging.warning(f"Failed to evaluate {input_npy_path}\n{error_traceback}")
+        return
 
 
 def task_eval(configs):

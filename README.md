@@ -4,27 +4,17 @@ Simulation-based filtering of synthesized dual-arm-hand grasps from [BimanGrasp-
 
 Modified from [DexGraspBench](https://github.com/JYChen18/DexGraspBench) to enable bimanual grasp simulation and filtering. It may be useful to overview the original README first.
 
-## Introduction
-
-### Main Usage
-- Replay and test **open-loop** grasping poses/trajectories in parallel.
-
-- Each grasping data point only needs to include:
-  - Object (must be pre-processed by [MeshProcess](https://github.com/JYChen18/MeshProcess)): `obj_scale`, `obj_pose`, `obj_path`.
-  - Hand: `approach_qpos` (optional), `pregrasp_qpos`, `grasp_qpos`, `squeeze_qpos`.
-
-
 ## Getting Started
 
 ### Installation
 1. Clone this repo and place it alongside the `BimanGrasp-Generation` repository as below.
     ```
-    BimanGrasp-Generation/
+    BimanBODex/
     |_ ...
     BimanDexGraspBench/
     |_ ...
     ```
-1. (Optional) Clone the third-party library [MuJoCo Menagerie](https://github.com/google-deepmind/mujoco_menagerie).
+1. Clone the third-party library:
     ```bash
     git submodule update --init --recursive --progress
     ```
@@ -34,6 +24,7 @@ Modified from [DexGraspBench](https://github.com/JYChen18/DexGraspBench) to enab
     conda activate BiDGBench
     pip install numpy==1.26.4
     conda install pytorch==2.2.2 pytorch-cuda=12.1 -c pytorch -c nvidia 
+    pip install mkl==2024.0.0
     pip install mujoco==3.3.2
     pip install trimesh
     pip install hydra-core
@@ -45,9 +36,16 @@ Modified from [DexGraspBench](https://github.com/JYChen18/DexGraspBench) to enab
     pip install 'qpsolvers[clarabel]'
     pip install -e ./third_party/pytorch_kinematics
     ```
-1. You may need to run the following command to avoid potential errors related to MKL such as `undefined symbol: iJIT_NotifyEvent`
+1. Export the dataset path:
     ```bash
-    conda install -c conda-forge mkl=2020.2 -y
+    # on local
+    export AnyScaleGraspDataset=/data/dataset/AnyScaleGrasp
+    # on server
+    export AnyScaleGraspDataset=/data/mingrui/dataset/AnyScaleGrasp
+    ```
+1. Create the object symbolic link in `./assets`:
+    ```bash
+    ln -s ${AnyScaleGraspDataset}/object ./assets/object
     ```
 
 ## USage
@@ -88,13 +86,14 @@ $ python src/main.py task=eval exp_name=minitest_both_full hand=dual_dummy_arm_s
 **Batch Processing**: process all grasp types (right_two, right_three, right_full, both_three, both_full) at once:
 
 ```bash
-$ ./script/process_all_grasp_types_shadow.sh <RUN_NAME>
-# e.g.: $ ./script/process_all_grasp_types_shadow.sh minitest
+$ ./script/process_all_grasp_types.sh --hand <HAND> --run_name <RUN_NAME> [--bodex_path <BODEX_OUTPUT_PATH>]
+# e.g.: $ ./script/process_all_grasp_types_bodex.sh --hand shadow --run_name minitest
+# e.g.: $ ./script/process_all_grasp_types_bodex.sh --hand leap --run_name minitest
 ```
 
-**Concatenate Dataset**: combine successful grasps from all grasp types into a unified dataset for NN training:
+**Concatenate Dataset**: combine successful grasps from all grasp types into a unified dataset saved in `${AnyScaleGraspDataset}/<DATASET_NAME>` for NN training:
 
 ```bash
-$ python script/concatenate_dataset.py --run_name <RUN_NAME> --output_root <OUTPUT_DIR>
-# e.g.: $ python script/concatenate_dataset.py --run_name minitest --output_root /data/dataset/AnyScaleGrasp/BimanBODex
+$ python script/concatenate_dataset.py --run_name <RUN_NAME> --dataset_name <DATASET_NAME>
+# e.g.: $ python script/concatenate_dataset.py --run_name minitest --dataset_name BimanBODex
 ```

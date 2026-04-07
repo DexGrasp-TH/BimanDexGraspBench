@@ -6,6 +6,7 @@
 
 import argparse
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -20,10 +21,22 @@ def _to_jsonable_list(value):
     return list(value)
 
 
+def _count_grasps(grasp_data):
+    for key, value in grasp_data.items():
+        if "obj" in key or key == "scene_path":
+            continue
+        if isinstance(value, np.ndarray) and value.ndim > 0:
+            return int(value.shape[0])
+        if isinstance(value, list):
+            return len(value)
+    raise ValueError("Cannot infer grasp count from grasp data.")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--run_name", type=str, required=True, help="Run name prefix")
-    parser.add_argument("--output_root", type=str, default="/data/dataset/AnyScaleGrasp/BimanBODex", help="Output root")
+    parser.add_argument("--dataset_name", type=str, default="BimanBODex", help="Dataset subdirectory name")
+    parser.add_argument("--output_root", type=str, default=None, help="Output root")
     parser.add_argument("--data_root", type=str, default="output", help="Data root")
     parser.add_argument(
         "--hand_name",
@@ -32,6 +45,12 @@ def main():
         help="Hand name (e.g., shadow)",
     )
     args = parser.parse_args()
+
+    if args.output_root is None:
+        dataset_root = os.environ.get("AnyScaleGraspDataset")
+        if dataset_root is None:
+            raise ValueError("Set AnyScaleGraspDataset or pass --output_root explicitly.")
+        args.output_root = str(Path(dataset_root) / args.dataset_name)
 
     bimanual_hand_name = f"dual_dummy_arm_{args.hand_name}"
     grasp_types = ["right_two", "right_three", "right_full", "both_three", "both_full"]
@@ -43,7 +62,9 @@ def main():
     target_hand_dir.mkdir(parents=True, exist_ok=True)
 
     total_files = 0
+    total_grasps = 0
     stats = {}
+    grasp_stats = {}
     metadata_saved = False
 
     for grasp_type in grasp_types:
@@ -54,6 +75,7 @@ def main():
         if not succ_collect_dir.exists():
             print(f"Warning: {succ_collect_dir} does not exist, skipping {grasp_type}")
             stats[grasp_type] = 0
+            grasp_stats[grasp_type] = 0
             continue
 
         grasp_type_dir = target_hand_dir / grasp_type
@@ -81,24 +103,30 @@ def main():
                 print(f"Saved metadata to {metadata_path}")
 
         count = 0
+        grasp_count = 0
         for npy_file in succ_collect_dir.rglob("*.npy"):
+            grasp_data = np.load(npy_file, allow_pickle=True).item()
             rel_path = npy_file.relative_to(succ_collect_dir)
             dest_path = grasp_type_dir / rel_path
             dest_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(npy_file, dest_path)
             count += 1
+            grasp_count += _count_grasps(grasp_data)
 
         stats[grasp_type] = count
+        grasp_stats[grasp_type] = grasp_count
         total_files += count
-        print(f"{grasp_type}: {count} files")
+        total_grasps += grasp_count
+        print(f"{grasp_type}: {count} files, {grasp_count} grasps")
 
     print(f"\n{'=' * 50}")
     print("Dataset concatenation complete")
     print(f"Output directory: {output_dir}")
     print("\nStatistics:")
     for grasp_type, count in stats.items():
-        print(f"  {grasp_type}: {count} files")
+        print(f"  {grasp_type}: {count} files, {grasp_stats[grasp_type]} grasps")
     print(f"  Total: {total_files} files")
+    print(f"  Total: {total_grasps} grasps")
     if not metadata_saved:
         print(f"  Warning: metadata.json was not created for any grasp type of {args.hand_name}")
     print(f"{'=' * 50}")
