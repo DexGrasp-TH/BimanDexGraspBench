@@ -87,13 +87,13 @@ $ python src/main.py task=eval exp_name=minitest_both_full hand=dual_dummy_arm_s
 
 ```bash
 $ ./script/process_all_grasp_types.sh --hand <HAND> --run_name <RUN_NAME> [--bodex_path <BODEX_OUTPUT_PATH>]
-# e.g.: $ ./script/process_all_grasp_types_bodex.sh --hand shadow --run_name minitest
-# e.g.: $ ./script/process_all_grasp_types_bodex.sh --hand leap --run_name minitest
+# e.g.: $ ./script/process_all_grasp_types.sh --hand shadow --run_name minitest
+# e.g.: $ ./script/process_all_grasp_types.sh --hand leap --run_name minitest
 ```
 
 **Concatenate Dataset**: combine successful grasps from all grasp types into a unified dataset saved in `${AnyScaleGraspDataset}/<DATASET_NAME>` for NN training:
 
 ```bash
-$ python script/concatenate_dataset.py --run_name <RUN_NAME> --dataset_name <DATASET_NAME>
+$ python script/concatenate_dataset.py --hand_name <HAND_NAME> --run_name <RUN_NAME> --dataset_name <DATASET_NAME>
 # e.g.: $ python script/concatenate_dataset.py --run_name minitest --dataset_name BimanBODex
 ```
