@@ -31,6 +31,24 @@
       "args": ["task=eval", "exp_name=minitest_both_full", "hand=dual_dummy_arm_shadow", "task.debug_viewer=True",
                "task.max_num=-1"]
 
+    },
+    {
+      "name": "Python: Format learn",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/main.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "args": [
+        "hand=dual_dummy_arm_leap",
+        "exp_name=learn_both_full",
+        "task=format",
+        "task.max_num=100",
+        "task.data_name=Learning",
+        "task.debug=True",
+        "task.data_path=../AnyScaleDexLearn/output/leapMulti_robotMultiHierar_dataset_full_1/tests/step_050000/leapMulti"
+      ]
+
     }
   ]
 }

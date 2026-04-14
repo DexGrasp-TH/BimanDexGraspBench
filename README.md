@@ -35,6 +35,7 @@ Modified from [DexGraspBench](https://github.com/JYChen18/DexGraspBench) to enab
     pip install imageio
     pip install 'qpsolvers[clarabel]'
     pip install -e ./third_party/pytorch_kinematics
+    pip install -e ./third_party/utils_python
     ```
 1. Export the dataset path:
     ```bash
@@ -95,5 +96,15 @@ $ ./script/process_all_grasp_types.sh --hand <HAND> --run_name <RUN_NAME> [--bod
 
 ```bash
 $ python script/concatenate_dataset.py --hand_name <HAND_NAME> --run_name <RUN_NAME> --dataset_name <DATASET_NAME>
-# e.g.: $ python script/concatenate_dataset.py --run_name minitest --dataset_name BimanBODex
+# e.g.: $ python script/concatenate_dataset.py --hand_name leap --run_name minitest --dataset_name BimanBODex
+```
+
+
+### Evaluation of AnyScaleDexLearn
+
+```bash
+# convert data format
+python src/main.py hand=<HAND> exp_name=<EXP_NAME> task=format task.max_num=-1 task.data_name=Learning task.data_path=<PATH>
+
+# E.g., python src/main.py hand=leap exp_name=learn task=format task.max_num=-1 task.data_name=Learning task.data_path=../AnyScaleDexLearn/output/leapMulti_robotMultiHierar_dataset_full_1/tests/step_050000/leapMulti
 ```

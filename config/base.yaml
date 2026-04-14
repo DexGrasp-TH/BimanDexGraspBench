@@ -1,5 +1,6 @@
 skip: False
-n_worker: 96    
+n_worker: 96
+gpu_id: 0
 setting: tabletop # fc / tabletop
 
 exp_name: debug

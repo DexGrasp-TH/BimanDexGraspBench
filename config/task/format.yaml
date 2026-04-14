@@ -1,4 +1,9 @@
 debug: False
-max_num: 1000
+max_num: -1
+
+# for batch conversion (48GB GPU Memory)
+learning_batch_size: 1024
+max_cuda_workers: 32
+
 data_name: BODex
 data_path: /mnt/disk1/jiayichen/data/cuDex/sim_shadow/fc/version0828/graspdata
