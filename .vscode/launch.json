@@ -40,15 +40,24 @@
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "args": [
-        "hand=dual_dummy_arm_leap",
-        "exp_name=learn_both_full",
+        "hand=leap",
+        "exp_name=learn_right_full",
         "task=format",
         "task.max_num=100",
         "task.data_name=Learning",
         "task.debug=True",
         "task.data_path=../AnyScaleDexLearn/output/leapMulti_robotMultiHierar_dataset_full_1/tests/step_050000/leapMulti"
       ]
+    },
+    {
+      "name": "Python: Eval learn",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/main.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "args": ["task=eval", "hand=dual_dummy_arm_leap", "exp_name=learn_both_full", "task.max_num=-1", "task.debug_viewer=True"]
 
-    }
+    },
   ]
 }

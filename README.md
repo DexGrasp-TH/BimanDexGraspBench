@@ -102,9 +102,20 @@ $ python script/concatenate_dataset.py --hand_name <HAND_NAME> --run_name <RUN_N
 
 ### Evaluation of AnyScaleDexLearn
 
+Convert data format.
 ```bash
-# convert data format
-python src/main.py hand=<HAND> exp_name=<EXP_NAME> task=format task.max_num=-1 task.data_name=Learning task.data_path=<PATH>
+python src/main.py hand=<HAND> task=format exp_name=<EXP_NAME>_<GRASP_TYPE> task.max_num=-1 task.data_name=Learning task.data_path=<PATH>
 
-# E.g., python src/main.py hand=leap exp_name=learn task=format task.max_num=-1 task.data_name=Learning task.data_path=../AnyScaleDexLearn/output/leapMulti_robotMultiHierar_dataset_full_1/tests/step_050000/leapMulti
+# E.g., python src/main.py task=format hand=leap exp_name=learn_right_full task.max_num=100 task.data_name=Learning task.data_path=../AnyScaleDexLearn/output/leapMulti_robotMultiHierar_dataset_full_1/tests/step_050000/leapMulti
+
+# E.g., python src/main.py task=format hand=dual_dummy_arm_leap exp_name=learn_both_full task.max_num=100 task.data_name=Learning task.data_path=../AnyScaleDexLearn/output/leapMulti_robotMultiHierar_dataset_full_1/tests/step_050000/leapMulti
 ```
+
+Evaluation.
+```bash
+python src/main.py task=eval hand=<HAND> exp_name=<EXP_NAME>_<GRASP_TYPE> task.max_num=-1 task.debug_viewer=False n_worker=96 
+
+# E.g., python src/main.py task=eval hand=dual_dummy_arm_leap exp_name=learn_both_full task.max_num=-1 task.debug_viewer=False 
+```
+
+

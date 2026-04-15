@@ -144,7 +144,7 @@ class MjHO:
                 type=mujoco.mjtGeom.mjGEOM_PLANE,
                 pos=[0, 0, 0],
                 size=[0, 0, 1.0],
-                rgba=[1.0, 1.0, 1.0, 0.0],  # transparent
+                rgba=[1.0, 1.0, 1.0, 0.8],  # transparent
             )
 
         obj_body = self.spec.worldbody.add_body(name="object")
