@@ -5,6 +5,7 @@ from glob import glob
 import traceback
 
 import numpy as np
+from tqdm import tqdm
 
 from .eval_func import *
 
@@ -48,14 +49,18 @@ def task_eval(configs):
     if len(input_path_lst) == 0:
         return
 
+    enable_tqdm = bool(getattr(configs.task, "tqdm", True))
     iterable_params = zip(input_path_lst, [configs] * len(input_path_lst))
+    progress_desc = "Evaluating grasps"
     if configs.task.debug_viewer or configs.task.debug_render:
-        for ip in iterable_params:
+        # Debug rendering runs serially, so update progress after every evaluated grasp file.
+        for ip in tqdm(iterable_params, total=len(input_path_lst), desc=progress_desc, disable=not enable_tqdm):
             safe_eval_one(ip)
     else:
         with multiprocessing.Pool(processes=configs.n_worker) as pool:
             result_iter = pool.imap_unordered(safe_eval_one, iterable_params)
-            results = list(result_iter)
+            # Multiprocessing progress advances when worker jobs finish.
+            results = list(tqdm(result_iter, total=len(input_path_lst), desc=progress_desc, disable=not enable_tqdm))
 
     grasp_lst = glob(os.path.join(configs.grasp_dir, "**/*.npy"), recursive=True)
     succ_lst = glob(os.path.join(configs.succ_dir, "**/*.npy"), recursive=True)

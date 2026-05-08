@@ -341,7 +341,8 @@ class BaseEval:
         eval_npy_path = self.input_npy_path.replace(self.configs.grasp_dir, self.configs.eval_dir)
         os.makedirs(os.path.dirname(eval_npy_path), exist_ok=True)
         np.save(eval_npy_path, eval_results)
-        logging.info(f"Save eval file to {eval_npy_path}.")
+        if not bool(getattr(self.configs.task, "tqdm", True)):
+            logging.info(f"Save eval file to {eval_npy_path}.")
 
         # Save success data symlink after eval_results is saved
         if self.configs.task.simulation_metrics is not None and eval_results["succ_flag"]:

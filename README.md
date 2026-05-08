@@ -33,6 +33,7 @@ Modified from [DexGraspBench](https://github.com/JYChen18/DexGraspBench) to enab
     pip install scikit-learn
     pip install usd-core
     pip install imageio
+    pip install tqdm
     pip install 'qpsolvers[clarabel]'
     pip install -e ./third_party/pytorch_kinematics
     pip install -e ./third_party/utils_python
