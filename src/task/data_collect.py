@@ -4,6 +4,7 @@ import multiprocessing
 import logging
 
 import numpy as np
+from tqdm import tqdm
 
 
 def many_to_one(params):
@@ -42,5 +43,6 @@ def task_collect(configs):
     ]
     with multiprocessing.Pool(processes=configs.n_worker) as pool:
         result_iter = pool.imap_unordered(many_to_one, iter_param_lst)
-        results = list(result_iter)
+        # Track completed folder-merge jobs because each worker processes one success-data folder.
+        results = list(tqdm(result_iter, total=len(iter_param_lst), desc="Collecting success folders"))
     return

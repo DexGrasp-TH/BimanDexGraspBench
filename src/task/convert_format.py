@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 from transforms3d import quaternions as tq
 import torch
+from tqdm import tqdm
 
 from util.rot_util import torch_quaternion_to_matrix, torch_matrix_to_quaternion
 
@@ -880,6 +881,8 @@ def task_format(configs):
         data_batches = [
             raw_data_path_lst[i : i + learning_batch_size] for i in range(0, len(raw_data_path_lst), learning_batch_size)
         ]
+        progress_total = len(data_batches)
+        progress_unit = "batch"
         iterable_params = zip(data_batches, [configs] * len(data_batches))
         worker_fn = LearningBatch
         # Limit concurrent GPU-heavy workers to reduce CUDA OOM risk.
@@ -892,19 +895,24 @@ def task_format(configs):
             f"max_cuda_workers={max_cuda_workers}"
         )
     else:
+        progress_total = len(raw_data_path_lst)
+        progress_unit = "file"
         iterable_params = zip(raw_data_path_lst, [configs] * len(raw_data_path_lst))
         worker_fn = eval(configs.task.data_name)
         n_pool_worker = min(n_pool_worker, len(raw_data_path_lst))
 
+    progress_desc = f"Converting {configs.task.data_name} {progress_unit}s"
     if configs.task.debug:
         results = []
-        for params in iterable_params:
+        # Debug mode is serial, so progress updates after each converted file or learning batch.
+        for params in tqdm(iterable_params, total=progress_total, desc=progress_desc):
             results.append(worker_fn(params))
     else:
         # CPU parallel
         with multiprocessing.Pool(processes=n_pool_worker) as pool:
             result_iter = pool.imap_unordered(worker_fn, iterable_params)
-            results = list(result_iter)
+            # Multiprocessing progress advances when conversion jobs finish.
+            results = list(tqdm(result_iter, total=progress_total, desc=progress_desc))
 
     grasp_lst = glob(os.path.join(configs.grasp_dir, "**/*.npy"), recursive=True)
     logging.info(f"Get {len(grasp_lst)} grasp data in {configs.save_dir}")
