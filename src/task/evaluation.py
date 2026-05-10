@@ -7,7 +7,6 @@ import traceback
 import numpy as np
 from tqdm import tqdm
 
-from .convert_format import calculate_object_world_height
 from .eval_func import *
 
 
@@ -29,20 +28,6 @@ def normalize_eval_index_range(input_items, start_index, end_index):
     normalized_start = min(normalized_start, total_num)
     normalized_end = max(normalized_start, normalized_end)
     return input_items[normalized_start:normalized_end], normalized_start, normalized_end
-
-
-def calculate_converted_grasp_object_height(input_npy_path):
-    """Calculate posed object height for one converted grasp file.
-
-    Args:
-        input_npy_path: Converted grasp `.npy` file containing object metadata.
-
-    Returns:
-        World-z object height in meters.
-    """
-
-    grasp_data = np.load(input_npy_path, allow_pickle=True).item()
-    return calculate_object_world_height(grasp_data["obj_path"], grasp_data["obj_scale"], grasp_data["obj_pose"])
 
 
 def safe_eval_one(params):
@@ -107,12 +92,7 @@ def task_eval(configs):
         iterator = tqdm(iterable_params, total=len(input_path_lst), desc=progress_desc, disable=not enable_tqdm)
         for selected_index, ip in enumerate(iterator):
             if configs.task.debug_viewer:
-                try:
-                    object_height = calculate_converted_grasp_object_height(ip[0])
-                    height_text = f", object_height={object_height:.6f}m"
-                except Exception:
-                    height_text = ", object_height=unknown"
-                print(f"Evaluate grasp index {input_index_lst[selected_index]}: {ip[0]}{height_text}", flush=True)
+                print(f"Evaluate grasp index {input_index_lst[selected_index]}: {ip[0]}", flush=True)
             safe_eval_one(ip)
     else:
         with multiprocessing.Pool(processes=configs.n_worker) as pool:

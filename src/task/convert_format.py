@@ -3,10 +3,7 @@ import json
 from glob import glob
 import logging
 import multiprocessing
-import shutil
-import traceback
 from pathlib import Path
-from functools import lru_cache
 
 import numpy as np
 from transforms3d import quaternions as tq
@@ -38,194 +35,6 @@ def load_scene_cfg(scene_path):
     update_relative_path(scene_cfg["scene"])
 
     return scene_cfg
-
-
-def _scalar_value(value):
-    """Return a Python scalar from a scalar-like or one-element container.
-
-    Args:
-        value: Raw metadata value, possibly a NumPy scalar/array/list.
-
-    Returns:
-        The first scalar item when `value` is array-like, otherwise `value` itself.
-    """
-
-    if isinstance(value, (list, tuple)):
-        return value[0]
-    if isinstance(value, np.ndarray):
-        return value.reshape(-1)[0].item()
-    return value
-
-
-def _resolve_curobo_scene_path(raw_scene_path):
-    """Resolve a raw curobo scene path to the format expected by `load_scene_cfg`.
-
-    Args:
-        raw_scene_path: Scene path stored in BODex-style raw data.
-
-    Returns:
-        Scene path relative to `src/curobo/content` when that marker exists.
-    """
-
-    scene_path = str(_scalar_value(raw_scene_path))
-    marker = "src/curobo/content/"
-    if marker in scene_path:
-        return scene_path.split(marker, 1)[1]
-    return scene_path
-
-
-@lru_cache(maxsize=None)
-def load_object_vertices(obj_path):
-    """Load object mesh vertices used for format-time height filtering.
-
-    Args:
-        obj_path: Object asset folder that contains `mesh/simplified.obj`.
-
-    Returns:
-        Array of mesh vertices in the object local frame.
-    """
-
-    mesh_path = os.path.join(obj_path, "mesh/simplified.obj")
-    vertices = []
-    with open(mesh_path, "r") as f:
-        for line in f:
-            if not line.startswith("v "):
-                continue
-            # OBJ vertex rows are `v x y z`; texture/normal rows start with different prefixes.
-            _, x, y, z, *_ = line.split()
-            vertices.append([float(x), float(y), float(z)])
-    if len(vertices) == 0:
-        raise ValueError(f"No vertices found in object mesh: {mesh_path}")
-    return np.asarray(vertices, dtype=np.float64)
-
-
-def calculate_object_world_height(obj_path, obj_scale, obj_pose):
-    """Calculate object height along the world z axis.
-
-    Args:
-        obj_path: Object asset folder that contains `mesh/simplified.obj`.
-        obj_scale: Scalar or xyz scale applied to local mesh vertices.
-        obj_pose: Object pose in `[x, y, z, qw, qx, qy, qz]` format.
-
-    Returns:
-        World-z bounding-box height after applying object scale, rotation, and translation.
-    """
-
-    scale = np.asarray(obj_scale, dtype=np.float64).reshape(-1)
-    if len(scale) == 1:
-        scale = np.repeat(scale[0], 3)
-    if len(scale) != 3:
-        raise ValueError(f"Expected scalar or xyz object scale, got {obj_scale}")
-
-    obj_pose = np.asarray(obj_pose, dtype=np.float64)
-    rotation_matrix = tq.quat2mat(obj_pose[3:])
-    # Apply the full scene transform so the height filter uses the same posed and scaled object as the scene cfg.
-    posed_vertices = (load_object_vertices(obj_path) * scale) @ rotation_matrix.T + obj_pose[:3]
-    return float(posed_vertices[:, 2].max() - posed_vertices[:, 2].min())
-
-
-def _extract_object_info_from_scene(scene_cfg):
-    """Extract object metadata from a loaded scene config.
-
-    Args:
-        scene_cfg: Scene config dictionary with `task.obj_name` and `scene` entries.
-
-    Returns:
-        Tuple `(obj_path, obj_scale, obj_pose)`.
-    """
-
-    obj_name = scene_cfg["task"]["obj_name"]
-    obj_cfg = scene_cfg["scene"][obj_name]
-    return os.path.dirname(os.path.dirname(obj_cfg["file_path"])), obj_cfg["scale"], obj_cfg["pose"]
-
-
-def _extract_raw_object_info(data_file, configs):
-    """Extract object metadata directly from one raw format input file.
-
-    Args:
-        data_file: Raw `.npy` file selected by `task_format`.
-        configs: Runtime config object containing `task.data_name`.
-
-    Returns:
-        Tuple `(obj_path, obj_scale, obj_pose)` for height filtering.
-    """
-
-    raw_data = np.load(data_file, allow_pickle=True).item()
-    if configs.task.data_name in ["BODex", "BimanBODex"]:
-        scene_path = _resolve_curobo_scene_path(raw_data["scene_path"])
-        return _extract_object_info_from_scene(load_scene_cfg(scene_path))
-    if configs.task.data_name == "Learning":
-        scene_path = _resolve_scene_path(str(_scalar_value(raw_data["scene_path"])))
-        return _extract_object_info_from_scene(load_scene_cfg(scene_path))
-    if configs.task.data_name == "BimanSynthesis":
-        object_code = Path(data_file).parent.name
-        obj_path = os.path.join("../BimanGrasp-Generation/data/object/DGN_2k/processed_data", object_code)
-        return obj_path, raw_data["scale"], raw_data["dual_arm_hand"]["obj_pose"]
-    raise NotImplementedError(f"Object height filtering does not support data_name={configs.task.data_name}")
-
-
-def filter_raw_paths_by_object_height(raw_data_path_lst, configs, min_object_height):
-    """Remove raw files whose object height is below the configured threshold.
-
-    Args:
-        raw_data_path_lst: List of raw `.npy` files selected for format conversion.
-        configs: Runtime config object containing source dataset metadata.
-        min_object_height: Minimum world-z object height in meters. Values <= 0 disable filtering.
-
-    Returns:
-        Tuple `(kept_paths, skipped_num)` after applying the height rule.
-    """
-
-    if min_object_height <= 0:
-        return raw_data_path_lst, 0
-
-    kept_path_lst = []
-    skipped_num = 0
-    for data_file in raw_data_path_lst:
-        try:
-            obj_path, obj_scale, obj_pose = _extract_raw_object_info(data_file, configs)
-            object_height = calculate_object_world_height(obj_path, obj_scale, obj_pose)
-        except Exception:
-            logging.warning(
-                f"Failed to calculate object height for raw file {data_file}; keep it for format conversion.\n"
-                f"{traceback.format_exc()}"
-            )
-            kept_path_lst.append(data_file)
-            continue
-
-        if object_height < min_object_height:
-            skipped_num += 1
-            logging.info(
-                f"Skip format conversion for {data_file}: object_height={object_height:.6f}m "
-                f"< min_object_height={min_object_height:.6f}m"
-            )
-            remove_converted_outputs_for_raw_file(data_file, configs)
-        else:
-            kept_path_lst.append(data_file)
-    return kept_path_lst, skipped_num
-
-
-def remove_converted_outputs_for_raw_file(data_file, configs):
-    """Remove stale converted outputs for one raw file skipped by format-time filtering.
-
-    Args:
-        data_file: Raw `.npy` file skipped by the height filter.
-        configs: Runtime config object containing `task.data_name`, `task.data_path`, and `grasp_dir`.
-
-    Returns:
-        None.
-    """
-
-    output_path = data_file.replace(configs.task.data_path, configs.grasp_dir)
-    if configs.task.data_name in ["BODex", "BimanBODex"]:
-        output_path = output_path.replace("_grasp.npy", "").replace("_mogen.npy", "")
-
-    if os.path.isdir(output_path):
-        shutil.rmtree(output_path)
-        logging.info(f"Remove stale converted output directory for filtered raw file: {output_path}")
-    elif os.path.isfile(output_path):
-        os.remove(output_path)
-        logging.info(f"Remove stale converted output file for filtered raw file: {output_path}")
 
 
 LEARNING_GRASP_TYPE_ID_TO_NAME = {
@@ -1057,17 +866,11 @@ def task_format(configs):
     raw_data_path_lst = glob(os.path.join(configs.task.data_path, *raw_data_struct), recursive=True)
     raw_file_num = len(raw_data_path_lst)
     raw_data_path_lst = sorted(raw_data_path_lst)
-    min_object_height = float(getattr(configs.task, "min_object_height", 0.0))
-    raw_data_path_lst, height_skip_num = filter_raw_paths_by_object_height(
-        raw_data_path_lst,
-        configs,
-        min_object_height,
-    )
     if configs.task.max_num > 0:
         raw_data_path_lst = np.random.permutation(raw_data_path_lst)[: configs.task.max_num]
     logging.info(
         f"Find {raw_file_num} raw files for {os.path.join(configs.task.data_path, *raw_data_struct)}, "
-        f"skip {height_skip_num} by object height, and use {len(raw_data_path_lst)}"
+        f"and use {len(raw_data_path_lst)}"
     )
 
     if len(raw_data_path_lst) == 0:
