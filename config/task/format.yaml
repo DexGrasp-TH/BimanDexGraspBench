@@ -1,6 +1,8 @@
 debug: False
 max_num: -1
 
+min_object_height: 0.02  # unit: m. Raw files with objects shorter than this world-z height are skipped; set <=0 to disable.
+
 # for batch conversion (48GB GPU Memory)
 learning_batch_size: 1024
 max_cuda_workers: 32

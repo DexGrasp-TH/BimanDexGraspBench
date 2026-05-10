@@ -70,7 +70,7 @@ $ python src/main.py task=format exp_name=<EXP_NAME> hand=<HAND> task.data_name=
 
 ```bash
 # simulation-based evaluation and filtering
-$ python src/main.py task=eval exp_name=<EXP_NAME> hand=<HAND> task.debug_viewer=False task.max_num=-1
+$ python src/main.py task=eval exp_name=<EXP_NAME> hand=<HAND> task.debug_viewer=False task.max_num=-1 n_worker=6
 ```
 
 Examples:
@@ -78,20 +78,48 @@ Examples:
 ```bash
 # Right-full
 $ python src/main.py task=format exp_name=minitest_right_full hand=shadow task.data_name=BimanBODex task.max_num=-1 task.data_path=../BimanBODex/src/curobo/content/assets/output/sim_shadow/tabletop_full/minitest/graspdata
-$ python src/main.py task=eval exp_name=minitest_right_full hand=shadow task.debug_viewer=False task.max_num=-1
+$ python src/main.py task=eval exp_name=minitest_right_full hand=shadow task.debug_viewer=False task.max_num=-1 n_worker=6
 
 # Both-full
 $ python src/main.py task=format exp_name=minitest_both_full hand=dual_dummy_arm_shadow task.data_name=BimanBODex task.max_num=-1 task.data_path=../BimanBODex/src/curobo/content/assets/output/sim_dual_dummy_arm_shadow/tabletop_full/minitest/graspdata
-$ python src/main.py task=eval exp_name=minitest_both_full hand=dual_dummy_arm_shadow task.debug_viewer=False task.max_num=-1
+$ python src/main.py task=eval exp_name=minitest_both_full hand=dual_dummy_arm_shadow task.debug_viewer=False task.max_num=-1 n_worker=6
 ```
 
-**Batch Processing**: process all grasp types (right_two, right_three, right_full, both_three, both_full) at once:
+**Batch Processing**: process all BimanBODex tabletop grasp types (`right_two`, `right_three`, `right_full`,
+`both_three`, `both_full`) with `script/process_all_grasp_types.py`.
 
 ```bash
-$ ./script/process_all_grasp_types.sh --hand <HAND> --run_name <RUN_NAME> [--bodex_path <BODEX_OUTPUT_PATH>]
-# e.g.: $ ./script/process_all_grasp_types.sh --hand shadow --run_name minitest
-# e.g.: $ ./script/process_all_grasp_types.sh --hand leap --run_name minitest
+# Run format, eval, and collect for all five grasp types.
+$ python script/process_all_grasp_types.py --hand <shadow|leap|leap_sp> --run_name <RUN_NAME> --max_num 100
+
+# Use a custom BimanBODex output root.
+$ python script/process_all_grasp_types.py --hand shadow --run_name minitest \
+    --bodex_path ../BimanBODex/src/curobo/content/assets/output --max_num 100
 ```
+
+The script maps the selected hand family to the correct single-hand and dual-dummy-arm Bench configs and BimanBODex
+output folders. It creates experiment names in the form `<RUN_NAME>_<GRASP_TYPE>`.
+
+Useful options:
+
+```bash
+# Inspect generated commands without running them.
+$ python script/process_all_grasp_types.py --hand shadow --run_name minitest --dry-run
+
+# Run only one grasp type. Repeat --grasp-type to select multiple.
+$ python script/process_all_grasp_types.py --hand shadow --run_name minitest --grasp-type right_two
+
+# Run only one stage. Repeat --stage to select multiple.
+$ python script/process_all_grasp_types.py --hand shadow --run_name minitest --stage eval
+$ python script/process_all_grasp_types.py --hand shadow --run_name minitest --stage eval --stage collect
+```
+
+Before processing, the script asks whether to delete existing outputs for the selected jobs. The deletion scope depends on
+the selected stage: `format` deletes the whole job output folder, `eval` deletes `evaluation/`, `succgrasp/`, `debug/`,
+and `succ_collect/`, and `collect` deletes only `succ_collect/`.
+
+Eval-only per-grasp-type Hydra overrides are defined near the top of `script/process_all_grasp_types.py` in
+`ADDITIONAL_EVAL_HYDRA_ARGS`.
 
 **Concatenate Dataset**: combine successful grasps from all grasp types into a unified dataset saved in `${AnyScaleGraspDataset}/<DATASET_NAME>` for NN training:
 
@@ -118,5 +146,4 @@ python src/main.py task=eval hand=<HAND> exp_name=<EXP_NAME>_<GRASP_TYPE> task.m
 
 # E.g., python src/main.py task=eval hand=dual_dummy_arm_leap exp_name=learn_both_full task.max_num=-1 task.debug_viewer=False 
 ```
-
 

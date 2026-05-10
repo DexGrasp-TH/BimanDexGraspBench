@@ -178,12 +178,37 @@ class MjHO:
 
         return
 
-    def _set_friction(self, test_friction):
+    def _normalize_friction_pair(self, friction_coef):
+        """Convert a configured friction value to the MuJoCo two-value friction pair used here.
+
+        Args:
+            friction_coef: Sequence-like config value containing sliding and torsional friction.
+
+        Returns:
+            Numpy array with two float values suitable for assigning to `geom.friction[:2]`.
+        """
+
+        friction_pair = np.asarray(friction_coef, dtype=np.float64).reshape(-1)
+        if len(friction_pair) < 2:
+            raise ValueError(f"Expected at least two friction coefficients, got {friction_coef}")
+        return friction_pair[:2]
+
+    def _set_friction(self, friction_coef):
+        """Set MuJoCo contact friction for all simulation geoms.
+
+        Args:
+            friction_coef: Two-value friction pair applied to all geoms.
+
+        Returns:
+            None.
+        """
+
+        friction_pair = self._normalize_friction_pair(friction_coef)
         self.spec.option.cone = mujoco.mjtCone.mjCONE_ELLIPTIC
         self.spec.option.noslip_iterations = 2
         self.spec.option.impratio = 10
         for g in self.spec.geoms:
-            g.friction[:2] = test_friction
+            g.friction[:2] = friction_pair
             g.condim = 4
         return
 

@@ -22,6 +22,8 @@ class BaseEval:
         self.configs = configs
         self.grasp_data = np.load(input_npy_path, allow_pickle=True).item()
         self.original_grasp_data = deepcopy(self.grasp_data)
+        self.mj_joint_names = None
+        self.data2mj_indices = None
 
         # Fix object mass by setting density
         obj_info = load_json(os.path.join(self.grasp_data["obj_path"], "info/simplified.json"))
@@ -37,7 +39,7 @@ class BaseEval:
             hand_xml_path=configs.hand.xml_path,
             hand_mocap=configs.hand.mocap,
             exclude_table_contact=configs.hand.exclude_table_contact,
-            friction_coef=configs.task.miu_coef,
+            friction_coef=getattr(configs.task, "sim_friction_coef", configs.task.miu_coef),
             debug_render=configs.task.debug_render,
             debug_viewer=configs.task.debug_viewer,
         )
@@ -49,6 +51,8 @@ class BaseEval:
             if self.configs.hand.mocap:
                 mj_joint_names = mj_joint_names[1:]  # skip free_joint
             data2mj_indices = [joint_names.index(name) for name in mj_joint_names]
+            self.mj_joint_names = mj_joint_names
+            self.data2mj_indices = data2mj_indices
             for key in ["pregrasp_qpos", "grasp_qpos", "squeeze_qpos"]:
                 qpos = np.asarray(self.grasp_data[key])
                 if self.configs.hand.mocap:
@@ -56,8 +60,17 @@ class BaseEval:
                 else:
                     qpos = qpos[data2mj_indices]
                 self.grasp_data[key] = qpos
+            if "approach_qpos" in self.grasp_data:
+                approach_qpos = np.asarray(self.grasp_data["approach_qpos"])
+                if self.configs.hand.mocap:
+                    approach_qpos[:, 7:] = approach_qpos[:, 7:][:, data2mj_indices]
+                else:
+                    approach_qpos = approach_qpos[:, data2mj_indices]
+                self.grasp_data["approach_qpos"] = approach_qpos
         else:
             return NotImplementedError("The input npy file should contain joint_names to specify the order of qpos.")
+
+        self._apply_eval_pose_adjustments()
 
         self.mj_ho.reset_pose_qpos(self.grasp_data["pregrasp_qpos"], self.grasp_data["obj_pose"], set_ctrl=False)
         self.mj_ho._init_after_first_fk()  # for some property that needs to be initialized after first FK
@@ -68,6 +81,239 @@ class BaseEval:
                 f.write(self.mj_ho.spec.to_xml())
 
         return
+
+    def _get_eval_pose_adjustment_config(self):
+        """Read optional evaluation-time pose adjustment values.
+
+        Args:
+            None.
+
+        Returns:
+            Tuple `(z_offset, pregrasp_ratio, squeeze_ratio)` where z offset is in meters
+            and both ratios use 1.0 as the no-op extrapolation value.
+        """
+
+        pose_config = getattr(self.configs.task, "pose_adjustment", None)
+        if pose_config is None:
+            return 0.0, 1.0, 1.0
+
+        z_offset = float(getattr(pose_config, "grasp_global_z_offset", 0.0))
+        pregrasp_ratio = float(getattr(pose_config, "pregrasp_extrapolate_ratio", 1.0))
+        squeeze_ratio = float(getattr(pose_config, "squeeze_extrapolate_ratio", 1.0))
+        return z_offset, pregrasp_ratio, squeeze_ratio
+
+    def _apply_eval_pose_adjustments(self):
+        """Apply configured evaluation-only qpos adjustments.
+
+        Args:
+            None.
+
+        Returns:
+            None. The method updates `self.grasp_data` in-place after qpos has been
+            converted to MuJoCo joint order.
+        """
+
+        z_offset, pregrasp_ratio, squeeze_ratio = self._get_eval_pose_adjustment_config()
+        if z_offset == 0.0 and pregrasp_ratio == 1.0 and squeeze_ratio == 1.0:
+            return
+
+        if self.configs.hand.mocap:
+            self._apply_mocap_pose_adjustments(z_offset, pregrasp_ratio, squeeze_ratio)
+        elif "dummy_arm" in self.configs.hand_name:
+            self._apply_dummy_arm_pose_adjustments(z_offset, pregrasp_ratio, squeeze_ratio)
+        else:
+            raise NotImplementedError(
+                "Evaluation pose adjustment currently supports mocap hands and dummy_arm hand configs."
+            )
+
+    def _apply_mocap_pose_adjustments(self, z_offset, pregrasp_ratio, squeeze_ratio):
+        """Adjust mocap wrist pose and hand joints for eval-time pose perturbation.
+
+        Args:
+            z_offset: World-frame z translation added to the grasp wrist pose in meters.
+            pregrasp_ratio: Extrapolation ratio from grasp to pregrasp qpos.
+            squeeze_ratio: Extrapolation ratio from grasp to squeeze qpos.
+
+        Returns:
+            None. The stage qpos arrays are updated in-place.
+        """
+
+        original_grasp_qpos = self.grasp_data["grasp_qpos"].copy()
+        adjusted_grasp_qpos = original_grasp_qpos.copy()
+        adjusted_grasp_qpos[:3] += np.array([0.0, 0.0, z_offset])
+
+        self.grasp_data["grasp_qpos"] = adjusted_grasp_qpos
+        self.grasp_data["pregrasp_qpos"] = self._extrapolate_mocap_qpos_from_grasp(
+            self.grasp_data["pregrasp_qpos"],
+            original_grasp_qpos,
+            adjusted_grasp_qpos,
+            pregrasp_ratio,
+        )
+        self.grasp_data["squeeze_qpos"] = self._extrapolate_mocap_qpos_from_grasp(
+            self.grasp_data["squeeze_qpos"],
+            original_grasp_qpos,
+            adjusted_grasp_qpos,
+            squeeze_ratio,
+        )
+        if "approach_qpos" in self.grasp_data:
+            # Approach waypoints are shifted by the same z offset so approach-phase evaluation remains continuous.
+            self.grasp_data["approach_qpos"][:, 2] += z_offset
+
+    def _apply_dummy_arm_pose_adjustments(self, z_offset, pregrasp_ratio, squeeze_ratio):
+        """Adjust dummy-arm translation and finger joints for eval-time pose perturbation.
+
+        Args:
+            z_offset: World-frame z translation added to each grasp-side dummy arm in meters.
+            pregrasp_ratio: Linear extrapolation ratio from grasp to pregrasp qpos.
+            squeeze_ratio: Linear extrapolation ratio from grasp to squeeze qpos.
+
+        Returns:
+            None. Dummy-arm translation and finger joints are updated in-place, while
+            dummy-arm rotation joints keep their original pregrasp/squeeze values.
+        """
+
+        original_grasp_qpos = self.grasp_data["grasp_qpos"].copy()
+        adjusted_grasp_qpos = original_grasp_qpos.copy()
+        z_indices = []
+        arm_rotation_indices = []
+        for prefix in ["ra", "la"]:
+            trans_indices = self._get_dummy_arm_translation_indices(prefix)
+            if trans_indices is None:
+                continue
+            adjusted_grasp_qpos[trans_indices[2]] += z_offset
+            z_indices.append(trans_indices[2])
+            arm_rotation_indices.extend(self._get_dummy_arm_rotation_indices(prefix))
+
+        self.grasp_data["grasp_qpos"] = adjusted_grasp_qpos
+        self.grasp_data["pregrasp_qpos"] = self._extrapolate_linear_qpos_from_grasp(
+            self.grasp_data["pregrasp_qpos"],
+            original_grasp_qpos,
+            adjusted_grasp_qpos,
+            pregrasp_ratio,
+        )
+        self.grasp_data["squeeze_qpos"] = self._extrapolate_linear_qpos_from_grasp(
+            self.grasp_data["squeeze_qpos"],
+            original_grasp_qpos,
+            adjusted_grasp_qpos,
+            squeeze_ratio,
+        )
+        # Dummy-arm rotation joints encode wrist orientation, so keep stage orientations unchanged like mocap quaternions.
+        self.grasp_data["pregrasp_qpos"][arm_rotation_indices] = np.asarray(
+            self.original_grasp_data["pregrasp_qpos"]
+        )[self.data2mj_indices][arm_rotation_indices]
+        self.grasp_data["squeeze_qpos"][arm_rotation_indices] = np.asarray(
+            self.original_grasp_data["squeeze_qpos"]
+        )[self.data2mj_indices][arm_rotation_indices]
+        if "approach_qpos" in self.grasp_data:
+            # Apply only the global z offset to approach waypoints; extrapolation is defined for pre/squeeze stages.
+            for z_idx in z_indices:
+                self.grasp_data["approach_qpos"][:, z_idx] += z_offset
+
+    def _get_dummy_arm_translation_indices(self, prefix):
+        """Find xyz translation joint indices for one dummy arm.
+
+        Args:
+            prefix: Dummy-arm side prefix, usually `ra` for right arm or `la` for left arm.
+
+        Returns:
+            A list of three indices `[x_idx, y_idx, z_idx]`, or None when that side is absent.
+        """
+
+        trans_joint_names = [f"{prefix}_TransXJ", f"{prefix}_TransYJ", f"{prefix}_TransZJ"]
+        if not all(name in self.mj_joint_names for name in trans_joint_names):
+            return None
+        return [self.mj_joint_names.index(name) for name in trans_joint_names]
+
+    def _get_dummy_arm_rotation_indices(self, prefix):
+        """Find xyz rotation joint indices for one dummy arm.
+
+        Args:
+            prefix: Dummy-arm side prefix, usually `ra` for right arm or `la` for left arm.
+
+        Returns:
+            A list of existing rotation indices `[rx_idx, ry_idx, rz_idx]`.
+        """
+
+        rot_joint_names = [f"{prefix}_RotXJ", f"{prefix}_RotYJ", f"{prefix}_RotZJ"]
+        return [self.mj_joint_names.index(name) for name in rot_joint_names if name in self.mj_joint_names]
+
+    def _extrapolate_linear_qpos_from_grasp(self, stage_qpos, original_grasp_qpos, adjusted_grasp_qpos, ratio):
+        """Linearly extrapolate one stage qpos from the grasp qpos.
+
+        Args:
+            stage_qpos: Original stage qpos vector.
+            original_grasp_qpos: Original grasp qpos vector before z offset.
+            adjusted_grasp_qpos: Grasp qpos vector after z offset.
+            ratio: Extrapolation ratio; 1.0 preserves the original offset from grasp.
+
+        Returns:
+            Adjusted stage qpos vector.
+        """
+
+        return adjusted_grasp_qpos + ratio * (stage_qpos - original_grasp_qpos)
+
+    def _extrapolate_mocap_qpos_from_grasp(self, stage_qpos, original_grasp_qpos, adjusted_grasp_qpos, ratio):
+        """Extrapolate mocap qpos while preserving the stage wrist orientation.
+
+        Args:
+            stage_qpos: Original mocap stage qpos with `[pos, quat, joints...]`.
+            original_grasp_qpos: Original grasp qpos before z offset.
+            adjusted_grasp_qpos: Grasp qpos after z offset.
+            ratio: Extrapolation ratio; 1.0 preserves the original offset from grasp.
+
+        Returns:
+            Adjusted mocap qpos with linearly extrapolated translation/joints and
+            original stage wrist quaternion.
+        """
+
+        adjusted_stage_qpos = self._extrapolate_linear_qpos_from_grasp(
+            stage_qpos,
+            original_grasp_qpos,
+            adjusted_grasp_qpos,
+            ratio,
+        )
+        # Keep the original pregrasp/squeeze orientation; only translation and finger joints are extrapolated.
+        adjusted_stage_qpos[3:7] = stage_qpos[3:7]
+        return adjusted_stage_qpos
+
+    def _copy_adjusted_qpos_to_eval_results(self, eval_results):
+        """Copy adjusted MuJoCo-order qpos back to the saved input joint order.
+
+        Args:
+            eval_results: Evaluation result dictionary copied from the original input data.
+
+        Returns:
+            None. The qpos fields in `eval_results` are updated in-place so saved eval
+            files match the actually evaluated wrist translations.
+        """
+
+        for key in ["pregrasp_qpos", "grasp_qpos", "squeeze_qpos"]:
+            eval_results[key] = self._qpos_from_mj_to_data_order(self.grasp_data[key])
+        if "approach_qpos" in self.grasp_data:
+            eval_results["approach_qpos"] = np.stack(
+                [self._qpos_from_mj_to_data_order(qpos) for qpos in self.grasp_data["approach_qpos"]], axis=0
+            )
+
+    def _qpos_from_mj_to_data_order(self, mj_qpos):
+        """Convert one adjusted qpos from MuJoCo order back to the input data order.
+
+        Args:
+            mj_qpos: One qpos array after MuJoCo-order conversion and pose adjustment.
+
+        Returns:
+            A qpos array aligned with `self.original_grasp_data["joint_names"]`.
+        """
+
+        mj_qpos = np.asarray(mj_qpos)
+        data_qpos = np.asarray(self.original_grasp_data["grasp_qpos"]).copy()
+        if self.configs.hand.mocap:
+            data_qpos[:7] = mj_qpos[:7]
+            for mj_idx, data_idx in enumerate(self.data2mj_indices):
+                data_qpos[7 + data_idx] = mj_qpos[7 + mj_idx]
+        else:
+            for mj_idx, data_idx in enumerate(self.data2mj_indices):
+                data_qpos[data_idx] = mj_qpos[mj_idx]
+        return data_qpos
 
     def _simulate_under_extforce_details(self, pre_obj_qpos):
         raise NotImplementedError
@@ -333,6 +579,8 @@ class BaseEval:
 
         # Determine grasp_type before saving
         eval_results["grasp_type"] = self._determine_grasp_type()
+        # Keep saved qpos consistent with the poses that were actually evaluated.
+        self._copy_adjusted_qpos_to_eval_results(eval_results)
         # Extract and combine robot poses
         robot_poses = self._extract_robot_poses(eval_results)
         eval_results.update(robot_poses)

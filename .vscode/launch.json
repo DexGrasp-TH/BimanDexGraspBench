@@ -11,14 +11,14 @@
       "args": ["minitest_right_full_shadow"]
     },
     {
-      "name": "Python: Eval minitest_right_full",
+      "name": "Python: Eval",
       "type": "python",
       "request": "launch",
       "program": "${workspaceFolder}/src/main.py",
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
-      "args": ["task=eval", "exp_name=minitest_right_full", "hand=shadow", "task.debug_viewer=True",
-               "task.max_num=-1"]
+      "args": ["task=eval", "exp_name=surface_sample_full_right_two", "hand=shadow", "task.debug_viewer=True",
+               "task.max_num=100", "task.start=0"]
 
     },
     {
