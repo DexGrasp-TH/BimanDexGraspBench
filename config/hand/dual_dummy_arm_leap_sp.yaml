@@ -23,3 +23,5 @@ tip_body_name: ['rh_fingertip_1', 'rh_fingertip_2', 'rh_fingertip_3', 'rh_thumb_
                 'lh_fingertip_1', 'lh_fingertip_2', 'lh_fingertip_3', 'lh_thumb_fingertip']
 
 wrist_body_names: ['rh_palm_lower', 'lh_palm_lower']
+# Local palm-frame approach axes aligned with `wrist_body_names`.
+wrist_approach_axes: [[0, 0, 1], [0, 0, 1]]

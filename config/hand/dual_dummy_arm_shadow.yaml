@@ -24,3 +24,5 @@ valid_body_name: [
 tip_body_name:
 
 wrist_body_names: ['rh_palm', 'lh_palm']
+# Local palm-frame approach axes aligned with `wrist_body_names`.
+wrist_approach_axes: [[0, 1, 0], [0, 1, 0]]
