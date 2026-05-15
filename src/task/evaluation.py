@@ -32,18 +32,61 @@ def normalize_eval_index_range(input_items, start_index, end_index):
 
 def safe_eval_one(params):
     input_npy_path, configs = params[0], params[1]
+    eval_runner = None
     try:
         if configs.hand.mocap:
             eval_func_name = f"{configs.setting}MocapEval"
         else:
             eval_func_name = f"{configs.setting}ArmEval"
 
-        eval(eval_func_name)(input_npy_path, configs).run()
-        return
+        eval_runner = eval(eval_func_name)(input_npy_path, configs)
+        eval_runner.run()
+        skipped_tiny_meshes = []
+        if getattr(eval_runner, "mj_ho", None) is not None:
+            skipped_tiny_meshes = list(getattr(eval_runner.mj_ho, "skipped_tiny_object_meshes", []))
+        return {
+            "tiny_convex_skipped_case": len(skipped_tiny_meshes) > 0,
+            "tiny_convex_skipped_mesh_count": len(skipped_tiny_meshes),
+            "tiny_convex_skipped_meshes": skipped_tiny_meshes,
+        }
     except Exception:
         error_traceback = traceback.format_exc()
         logging.warning(f"Failed to evaluate {input_npy_path}\n{error_traceback}")
-        return
+        skipped_tiny_meshes = []
+        if eval_runner is not None and getattr(eval_runner, "mj_ho", None) is not None:
+            skipped_tiny_meshes = list(getattr(eval_runner.mj_ho, "skipped_tiny_object_meshes", []))
+        return {
+            "tiny_convex_skipped_case": len(skipped_tiny_meshes) > 0,
+            "tiny_convex_skipped_mesh_count": len(skipped_tiny_meshes),
+            "tiny_convex_skipped_meshes": skipped_tiny_meshes,
+        }
+
+
+def summarize_tiny_convex_mesh_skips(results):
+    """Summarize tiny convex mesh partial skips reported by eval workers.
+
+    Args:
+        results: Iterable of worker return dictionaries from `safe_eval_one`.
+
+    Returns:
+        Tuple `(case_count, mesh_instance_count, unique_mesh_count)` where case count
+        is the number of evaluated grasps with at least one partial convex mesh skip.
+    """
+
+    case_count = 0
+    mesh_instance_count = 0
+    unique_mesh_keys = set()
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        if result.get("tiny_convex_skipped_case", False):
+            case_count += 1
+        mesh_instance_count += int(result.get("tiny_convex_skipped_mesh_count", 0))
+        for mesh_record in result.get("tiny_convex_skipped_meshes", []):
+            obj_path = mesh_record.get("obj_path", "")
+            mesh_name = mesh_record.get("mesh", "")
+            unique_mesh_keys.add((obj_path, mesh_name))
+    return case_count, mesh_instance_count, len(unique_mesh_keys)
 
 
 def task_eval(configs):
@@ -90,10 +133,11 @@ def task_eval(configs):
         enable_tqdm = enable_tqdm and not bool(configs.task.debug_viewer)
         # Debug rendering runs serially. Viewer mode prints each grasp explicitly because tqdm is disabled.
         iterator = tqdm(iterable_params, total=len(input_path_lst), desc=progress_desc, disable=not enable_tqdm)
+        results = []
         for selected_index, ip in enumerate(iterator):
             if configs.task.debug_viewer:
                 print(f"Evaluate grasp index {input_index_lst[selected_index]}: {ip[0]}", flush=True)
-            safe_eval_one(ip)
+            results.append(safe_eval_one(ip))
     else:
         with multiprocessing.Pool(processes=configs.n_worker) as pool:
             result_iter = pool.imap_unordered(safe_eval_one, iterable_params)
@@ -105,6 +149,15 @@ def task_eval(configs):
     eval_lst = glob(os.path.join(configs.eval_dir, "**/*.npy"), recursive=True)
     logging.info(
         f"Get {len(grasp_lst)} grasp data, {len(eval_lst)} evaluated, and {len(succ_lst)} succeeded in {configs.save_dir}"
+    )
+    tiny_skip_case_count, tiny_skip_mesh_count, tiny_skip_unique_mesh_count = summarize_tiny_convex_mesh_skips(results)
+    logging.info(
+        "Tiny convex mesh filtering summary: %d evaluated cases had at least one tiny convex mesh skipped; "
+        "%d partial convex mesh instances were skipped across %d unique object mesh pieces. "
+        "Only those tiny convex mesh pieces were skipped; the grasp cases themselves were still evaluated.",
+        tiny_skip_case_count,
+        tiny_skip_mesh_count,
+        tiny_skip_unique_mesh_count,
     )
     logging.info("Finish evaluation")
 

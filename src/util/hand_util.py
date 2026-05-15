@@ -1,6 +1,7 @@
 import os
 import pdb
 import time
+import logging
 
 import trimesh
 import numpy as np
@@ -13,6 +14,8 @@ from .rot_util import interplote_pose, interplote_qpos
 
 class MjHO:
     hand_prefix: str = "child-"
+    min_object_mesh_scaled_volume: float = 1e-14
+    _object_mesh_scaled_volume_cache = {}
 
     def __init__(
         self,
@@ -35,6 +38,7 @@ class MjHO:
         self.spec.option.disableflags = mujoco.mjtDisableBit.mjDSBL_GRAVITY
         self.b_debug_render = debug_render
         self.b_debug_viewer = debug_viewer
+        self.skipped_tiny_object_meshes = []
         if self.b_debug_render or self.b_debug_viewer:
             self.spec.add_texture(
                 type=mujoco.mjtTexture.mjTEXTURE_SKYBOX,
@@ -137,6 +141,66 @@ class MjHO:
             )
         return
 
+    def _get_object_mesh_scaled_volume(self, file_path, obj_scale):
+        """Calculate the mesh volume after applying the object scale.
+
+        Args:
+            file_path: Path to a convex-piece OBJ mesh file.
+            obj_scale: Uniform scale used when adding the object mesh to MuJoCo.
+
+        Returns:
+            Tuple `(scaled_volume, scaled_extents)` where `scaled_volume` is the
+            absolute mesh volume after scaling and `scaled_extents` is the scaled
+            axis-aligned bounding-box size.
+        """
+
+        cache_key = (os.path.abspath(file_path), float(obj_scale))
+        if cache_key in self._object_mesh_scaled_volume_cache:
+            return self._object_mesh_scaled_volume_cache[cache_key]
+
+        mesh = trimesh.load(file_path, force="mesh", process=False)
+        scaled_volume = abs(float(mesh.volume)) * (float(obj_scale) ** 3)
+        scaled_extents = np.asarray(mesh.extents, dtype=np.float64) * float(obj_scale)
+        self._object_mesh_scaled_volume_cache[cache_key] = (scaled_volume, scaled_extents)
+        return scaled_volume, scaled_extents
+
+    def _should_skip_object_mesh(self, obj_path, file_path, mesh_name, obj_scale):
+        """Decide whether a convex object mesh is too small to add to MuJoCo.
+
+        Args:
+            obj_path: Object asset directory used for warning messages.
+            file_path: Path to a convex-piece OBJ mesh file.
+            mesh_name: MuJoCo mesh name derived from the OBJ filename.
+            obj_scale: Uniform scale used when adding the object mesh to MuJoCo.
+
+        Returns:
+            Boolean indicating whether this mesh should be skipped.
+        """
+
+        scaled_volume, scaled_extents = self._get_object_mesh_scaled_volume(file_path, obj_scale)
+        if scaled_volume >= self.min_object_mesh_scaled_volume:
+            return False
+
+        skip_record = {
+            "obj_path": obj_path,
+            "mesh": mesh_name,
+            "scaled_volume": scaled_volume,
+            "threshold": self.min_object_mesh_scaled_volume,
+            "scaled_extents": scaled_extents.tolist(),
+        }
+        self.skipped_tiny_object_meshes.append(skip_record)
+        if self.b_debug_viewer or self.b_debug_render:
+            logging.warning(
+                "Skip tiny object convex mesh in MuJoCo scene: obj_path=%s, mesh=%s, "
+                "scaled_volume=%.6e, threshold=%.6e, scaled_extents=%s",
+                obj_path,
+                mesh_name,
+                scaled_volume,
+                self.min_object_mesh_scaled_volume,
+                scaled_extents.tolist(),
+            )
+        return True
+
     def _add_object(self, obj_path, obj_scale, obj_density, has_floor_z0):
         if has_floor_z0:
             floor_geom = self.spec.worldbody.add_geom(
@@ -151,9 +215,14 @@ class MjHO:
         obj_body.add_freejoint(name="obj_freejoint")
         parts_folder = os.path.join(obj_path, "urdf/meshes")
         for file in os.listdir(parts_folder):
+            if not file.endswith(".obj"):
+                continue
             file_path = os.path.join(parts_folder, file)
             mesh_name = file.replace(".obj", "")
             mesh_id = mesh_name.replace("convex_piece_", "")
+
+            if self._should_skip_object_mesh(obj_path, file_path, mesh_name, obj_scale):
+                continue
 
             self.spec.add_mesh(
                 name=mesh_name,

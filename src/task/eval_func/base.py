@@ -24,6 +24,12 @@ class BaseEval:
         self.original_grasp_data = deepcopy(self.grasp_data)
         self.mj_joint_names = None
         self.data2mj_indices = None
+        self.nonfinite_qpos_fields = self._find_nonfinite_qpos_fields(self.grasp_data)
+        self.mj_ho = None
+        if len(self.nonfinite_qpos_fields) > 0:
+            if self.configs.task.debug_viewer or self.configs.task.debug_render:
+                print(f"Skip non-finite qpos fields: {self.nonfinite_qpos_fields}")
+            return
 
         # Fix object mass by setting density
         obj_info = load_json(os.path.join(self.grasp_data["obj_path"], "info/simplified.json"))
@@ -81,6 +87,25 @@ class BaseEval:
                 f.write(self.mj_ho.spec.to_xml())
 
         return
+
+    def _find_nonfinite_qpos_fields(self, grasp_data):
+        """Find qpos fields that contain NaN or Inf values before MuJoCo evaluation.
+
+        Args:
+            grasp_data: Loaded grasp dictionary before any MuJoCo scene is built.
+
+        Returns:
+            A list of qpos field names containing at least one non-finite value.
+        """
+
+        invalid_fields = []
+        for key in ["approach_qpos", "pregrasp_qpos", "grasp_qpos", "squeeze_qpos", "lift_qpos"]:
+            if key not in grasp_data:
+                continue
+            qpos = np.asarray(grasp_data[key], dtype=np.float64)
+            if not np.isfinite(qpos).all():
+                invalid_fields.append(key)
+        return invalid_fields
 
     def _get_eval_pose_adjustment_config(self):
         """Read optional evaluation-time pose adjustment values.
@@ -554,6 +579,16 @@ class BaseEval:
 
         eval_results = deepcopy(self.original_grasp_data)
 
+        if len(self.nonfinite_qpos_fields) > 0:
+            eval_results["succ_flag"] = False
+            eval_results["delta_pos"] = np.nan
+            eval_results["delta_angle"] = np.nan
+            eval_results["eval_failure_reason"] = "nonfinite_qpos"
+            eval_results["nonfinite_qpos_fields"] = list(self.nonfinite_qpos_fields)
+            eval_results["grasp_type"] = self._determine_grasp_type()
+            self._save_eval_results(eval_results)
+            return
+
         if self.configs.task.pene_contact_metrics is not None:
             (
                 eval_results["ho_pene"],
@@ -585,18 +620,31 @@ class BaseEval:
         robot_poses = self._extract_robot_poses(eval_results)
         eval_results.update(robot_poses)
 
-        # Save evaluation information
+        self._save_eval_results(eval_results)
+
+        # Save success data symlink after eval_results is saved
+        if self.configs.task.simulation_metrics is not None and eval_results["succ_flag"]:
+            succ_npy_path = self.input_npy_path.replace(self.configs.grasp_dir, self.configs.succ_dir)
+            if not os.path.exists(succ_npy_path):
+                eval_npy_path = self.input_npy_path.replace(self.configs.grasp_dir, self.configs.eval_dir)
+                os.makedirs(os.path.dirname(succ_npy_path), exist_ok=True)
+                os.system(f"ln -s {os.path.relpath(eval_npy_path, os.path.dirname(succ_npy_path))} {succ_npy_path}")
+
+        return
+
+    def _save_eval_results(self, eval_results):
+        """Save one evaluation result dictionary to the configured eval directory.
+
+        Args:
+            eval_results: Evaluation result dictionary to persist.
+
+        Returns:
+            None. The method writes the `.npy` file and optionally logs the save path.
+        """
+
         eval_npy_path = self.input_npy_path.replace(self.configs.grasp_dir, self.configs.eval_dir)
         os.makedirs(os.path.dirname(eval_npy_path), exist_ok=True)
         np.save(eval_npy_path, eval_results)
         if not bool(getattr(self.configs.task, "tqdm", True)):
             logging.info(f"Save eval file to {eval_npy_path}.")
-
-        # Save success data symlink after eval_results is saved
-        if self.configs.task.simulation_metrics is not None and eval_results["succ_flag"]:
-            succ_npy_path = eval_npy_path.replace(self.configs.eval_dir, self.configs.succ_dir)
-            if not os.path.exists(succ_npy_path):
-                os.makedirs(os.path.dirname(succ_npy_path), exist_ok=True)
-                os.system(f"ln -s {os.path.relpath(eval_npy_path, os.path.dirname(succ_npy_path))} {succ_npy_path}")
-
         return

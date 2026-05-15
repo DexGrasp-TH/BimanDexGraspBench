@@ -31,15 +31,19 @@ from process_all_grasp_types import GRASP_TYPE_NAMES, GRASP_TYPES, HAND_CONFIGS 
 from task.statistic import (  # noqa: E402
     DEFAULT_WRIST_APPROACH_AXIS,
     get_bimanual_relative_approach_geometry,
+    get_bimanual_relative_approach_pairwise_distance,
     get_grasp_joint_pos_diversity,
+    get_wrist_approach_pairwise_distance,
     get_wrist_tabletop_approach_coverage,
 )
 
 DEFAULT_TRANS_THRE = 0.05
 DEFAULT_ANGLE_THRE = 15.0
+DEFAULT_SELF_PENE_THRE = -0.01
 SEVERE_PENETRATION_SENTINEL = 100.0
 FAILURE_REASON_NAMES = (
     "pregrasp_severe_penetration",
+    "self_penetration",
     "position_error",
     "rotation_error",
     "unknown",
@@ -110,6 +114,39 @@ class EvalRecord:
     data: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class ObjectScaleStats:
+    """Aggregated success statistics for one object scale.
+
+    Args:
+        scale_key: Stable printable scale key used in JSON output.
+        evaluated_grasps: Number of evaluated grasps for this scale.
+        successful_grasps: Number of successful grasps for this scale.
+
+    Returns:
+        Dataclass instance representing one object-scale row.
+    """
+
+    scale_key: str
+    evaluated_grasps: int
+    successful_grasps: int
+
+    @property
+    def success_rate(self) -> float | None:
+        """Return grasp success rate for this scale.
+
+        Args:
+            None.
+
+        Returns:
+            Success rate, or None if no evaluated grasp exists.
+        """
+
+        if self.evaluated_grasps == 0:
+            return None
+        return float(self.successful_grasps / self.evaluated_grasps)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the command line parser.
 
@@ -160,6 +197,17 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=DEFAULT_ANGLE_THRE,
         help=f"Rotation threshold in degrees used to classify rotation-only failures. Default: {DEFAULT_ANGLE_THRE}.",
+    )
+    parser.add_argument(
+        "--self-pene-thre",
+        "--self_pene_thre",
+        dest="self_pene_thre",
+        type=float,
+        default=DEFAULT_SELF_PENE_THRE,
+        help=(
+            "Hand-hand penetration threshold in meters. Grasps with self_pene greater "
+            f"than this value are counted as failures. Default: {DEFAULT_SELF_PENE_THRE}."
+        ),
     )
     parser.add_argument("--no-json", action="store_true", help="Print only; do not save a JSON summary.")
     return parser
@@ -247,6 +295,23 @@ def success_from_data(data: dict[str, Any], rel_path: Path, succ_rel_paths: set[
     return rel_path.as_posix() in succ_rel_paths
 
 
+def has_excessive_self_penetration(data: dict[str, Any], self_pene_thre: float) -> bool:
+    """Check whether one evaluated grasp exceeds the self-penetration threshold.
+
+    Args:
+        data: Evaluation dictionary loaded from an `.npy` file.
+        self_pene_thre: Maximum allowed hand-hand penetration depth in meters.
+
+    Returns:
+        True if `self_pene` exists and is greater than `self_pene_thre`; otherwise
+        False. Missing or non-finite values are not treated as self-penetration
+        failures here so older/early-failed eval files fall back to other reasons.
+    """
+
+    self_pene = scalar_float_from_data(data, "self_pene")
+    return self_pene is not None and self_pene > self_pene_thre
+
+
 def scalar_float_from_data(data: dict[str, Any], key: str) -> float | None:
     """Read one scalar float from an evaluation dictionary.
 
@@ -267,11 +332,45 @@ def scalar_float_from_data(data: dict[str, Any], key: str) -> float | None:
     return value if np.isfinite(value) else None
 
 
+def object_scale_key_from_data(data: dict[str, Any]) -> str:
+    """Read a stable object-scale key from one evaluation dictionary.
+
+    Args:
+        data: Evaluation dictionary loaded from an `.npy` file.
+
+    Returns:
+        Printable object-scale key. Missing or invalid values are grouped as
+        `unknown`.
+    """
+
+    scale_value = scalar_float_from_data(data, "obj_scale")
+    if scale_value is None:
+        return "unknown"
+    return f"{scale_value:.6g}"
+
+
+def object_scale_sort_key(scale_key: str) -> tuple[int, float | str]:
+    """Build a stable sort key for object-scale summary rows.
+
+    Args:
+        scale_key: Printable object-scale key.
+
+    Returns:
+        Tuple that sorts numeric scales first and non-numeric keys last.
+    """
+
+    try:
+        return (0, float(scale_key))
+    except ValueError:
+        return (1, scale_key)
+
+
 def classify_failure_reason(
     data: dict[str, Any],
     success: bool,
     trans_thre: float,
     angle_thre: float,
+    self_pene_thre: float,
 ) -> str | None:
     """Classify one failed grasp into the main simulation failure reasons.
 
@@ -280,6 +379,8 @@ def classify_failure_reason(
         success: Whether this grasp succeeded in simulation.
         trans_thre: Translation threshold used by evaluation success checks.
         angle_thre: Rotation threshold in degrees used by evaluation success checks.
+        self_pene_thre: Hand-hand penetration threshold used to classify
+            self-penetration failures.
 
     Returns:
         Failure reason key for failed grasps, None for successful grasps.
@@ -290,13 +391,21 @@ def classify_failure_reason(
 
     delta_pos = scalar_float_from_data(data, "delta_pos")
     delta_angle = scalar_float_from_data(data, "delta_angle")
-    if delta_pos is None or delta_angle is None:
-        return "unknown"
+    if has_excessive_self_penetration(data, self_pene_thre):
+        return "self_penetration"
 
     # `_eval_simulate_under_extforce` records this sentinel when initial hand-object
     # or hand-hand penetration exceeds `task.simulation_metrics.max_pene`.
-    if delta_pos >= SEVERE_PENETRATION_SENTINEL and delta_angle >= SEVERE_PENETRATION_SENTINEL:
+    if (
+        delta_pos is not None
+        and delta_angle is not None
+        and delta_pos >= SEVERE_PENETRATION_SENTINEL
+        and delta_angle >= SEVERE_PENETRATION_SENTINEL
+    ):
         return "pregrasp_severe_penetration"
+
+    if delta_pos is None or delta_angle is None:
+        return "unknown"
 
     # Position failure is assigned before rotation because an object that was not
     # lifted/stabilized enough may also show a large final rotation.
@@ -311,6 +420,7 @@ def summarize_failure_reasons(
     records: list[EvalRecord],
     trans_thre: float,
     angle_thre: float,
+    self_pene_thre: float,
 ) -> dict[str, Any]:
     """Summarize failure-reason counts and rates for one grasp type.
 
@@ -318,6 +428,8 @@ def summarize_failure_reasons(
         records: Loaded evaluation records for one grasp type.
         trans_thre: Translation threshold used to classify position-error failures.
         angle_thre: Rotation threshold in degrees used to classify rotation-only failures.
+        self_pene_thre: Hand-hand penetration threshold used to classify
+            self-penetration failures.
 
     Returns:
         JSON-serializable dictionary containing counts and ratios for each reason.
@@ -326,7 +438,7 @@ def summarize_failure_reasons(
     reason_counts = Counter()
     failed_count = 0
     for record in records:
-        reason = classify_failure_reason(record.data, record.success, trans_thre, angle_thre)
+        reason = classify_failure_reason(record.data, record.success, trans_thre, angle_thre, self_pene_thre)
         if reason is None:
             continue
         failed_count += 1
@@ -348,11 +460,13 @@ def summarize_failure_reasons(
     }
 
 
-def load_eval_records(job: StatJob) -> tuple[list[EvalRecord], list[str]]:
+def load_eval_records(job: StatJob, self_pene_thre: float) -> tuple[list[EvalRecord], list[str]]:
     """Load all evaluation records for one grasp type.
 
     Args:
         job: Stat job describing one grasp type output folder.
+        self_pene_thre: Hand-hand penetration threshold used to override the
+            raw simulation success flag.
 
     Returns:
         Pair of loaded records and warning messages collected while reading.
@@ -375,10 +489,12 @@ def load_eval_records(job: StatJob) -> tuple[list[EvalRecord], list[str]]:
         rel_path = eval_path.relative_to(job.eval_dir)
         data = np.load(eval_path, allow_pickle=True).item()
         data["_source_path"] = str(eval_path)
+        raw_success = success_from_data(data, rel_path, succ_rel_paths)
+        success = raw_success and not has_excessive_self_penetration(data, self_pene_thre)
         records.append(
             EvalRecord(
                 scene_id=scene_id_from_eval_path(eval_path, job.eval_dir),
-                success=success_from_data(data, rel_path, succ_rel_paths),
+                success=success,
                 data=data,
             )
         )
@@ -431,11 +547,116 @@ def safe_diversity(data_lst: list[dict[str, Any]], metric_name: str, metric_func
         return None, f"skip {metric_name}: {error}"
 
 
+def build_wrist_pose_diversity(
+    data_lst: list[dict[str, Any]],
+    wrist_approach_axes: Any,
+) -> tuple[dict[str, Any | None], list[str]]:
+    """Compute wrist-pose diversity metrics for successful grasps.
+
+    Args:
+        data_lst: Successful evaluation dictionaries used for diversity.
+        wrist_approach_axes: Per-hand local approach axes read from hand config.
+
+    Returns:
+        Pair of JSON-serializable wrist-pose diversity metrics and warning messages.
+    """
+
+    metrics: dict[str, Any | None] = {}
+    warnings = []
+    for metric_name, metric_func in (
+        (
+            "approach_coverage",
+            lambda data_lst: get_wrist_tabletop_approach_coverage(
+                data_lst,
+                local_axes=wrist_approach_axes,
+            ),
+        ),
+        (
+            "approach_pairwise_distance",
+            lambda data_lst: get_wrist_approach_pairwise_distance(
+                data_lst,
+                local_axes=wrist_approach_axes,
+            ),
+        ),
+        ("joint_position_pca", get_grasp_joint_pos_diversity),
+    ):
+        metric_value, warning = safe_diversity(data_lst, f"wrist_pose.{metric_name}", metric_func)
+        metrics[metric_name] = metric_value
+        if warning:
+            warnings.append(warning)
+    return metrics, warnings
+
+
+def build_bimanual_relative_approach_diversity(
+    data_lst: list[dict[str, Any]],
+    wrist_approach_axes: Any,
+) -> tuple[dict[str, Any | None], list[str]]:
+    """Compute bimanual relative approach diversity metrics.
+
+    Args:
+        data_lst: Successful evaluation dictionaries used for diversity.
+        wrist_approach_axes: Per-hand local approach axes read from hand config.
+
+    Returns:
+        Pair of JSON-serializable bimanual relative approach metrics and warning
+        messages.
+    """
+
+    metrics: dict[str, Any | None] = {
+        "applicable": True,
+        "metric_source": "left_wrist_approach_axis_in_right_wrist_frame_positive_hemisphere",
+        "note": (
+            "Left wrist approach axis is expressed in the right wrist local frame. "
+            "Coverage is computed on the positive hemisphere defined by the right "
+            "hand local palm-side approach axis."
+        ),
+    }
+    warnings = []
+    first_global_pose = np.asarray(data_lst[0].get("grasp_global_pose", []), dtype=np.float32)
+    if first_global_pose.size // 7 < 2:
+        metrics.update(
+            {
+                "applicable": False,
+                "hemisphere_coverage": None,
+                "hemisphere_pairwise_distance": None,
+                "angle_coverage": None,
+                "angle_pairwise_distance": None,
+            }
+        )
+        return metrics, warnings
+
+    for metric_name, metric_func in (
+        (
+            "hemisphere_coverage",
+            lambda data_lst: get_bimanual_relative_approach_geometry(
+                data_lst,
+                local_axes=wrist_approach_axes,
+            ),
+        ),
+        (
+            "hemisphere_pairwise_distance",
+            lambda data_lst: get_bimanual_relative_approach_pairwise_distance(
+                data_lst,
+                local_axes=wrist_approach_axes,
+            ),
+        ),
+    ):
+        metric_value, warning = safe_diversity(data_lst, f"bimanual_relative_approach.{metric_name}", metric_func)
+        metrics[metric_name] = metric_value
+        if warning:
+            warnings.append(warning)
+    # Backward-compatible aliases for older JSON consumers.
+    metrics["angle_coverage"] = metrics.get("hemisphere_coverage")
+    metrics["angle_pairwise_distance"] = metrics.get("hemisphere_pairwise_distance")
+    return metrics, warnings
+
+
 def summarize_grasp_type(
     job: StatJob,
     records: list[EvalRecord],
     trans_thre: float,
     angle_thre: float,
+    self_pene_thre: float,
 ) -> dict[str, Any]:
     """Summarize grasp-level and diversity metrics for one grasp type.
 
@@ -444,6 +665,8 @@ def summarize_grasp_type(
         records: Loaded evaluation records for this grasp type.
         trans_thre: Translation threshold used to classify position-error failures.
         angle_thre: Rotation threshold in degrees used to classify rotation-only failures.
+        self_pene_thre: Hand-hand penetration threshold used to classify
+            self-penetration failures.
 
     Returns:
         JSON-serializable summary dictionary.
@@ -459,32 +682,63 @@ def summarize_grasp_type(
     warnings = []
 
     if len(data_lst) >= 2:
-        for metric_name, metric_func in (
-            (
-                "wrist_tabletop_approach_coverage",
-                lambda data_lst: get_wrist_tabletop_approach_coverage(
-                    data_lst,
-                    local_axes=job.wrist_approach_axes,
-                ),
-            ),
-            (
-                "bimanual_relative_approach_geometry",
-                lambda data_lst: get_bimanual_relative_approach_geometry(
-                    data_lst,
-                    local_axes=job.wrist_approach_axes,
-                ),
-            ),
-            ("joint_position", get_grasp_joint_pos_diversity),
-        ):
-            metric_value, warning = safe_diversity(data_lst, metric_name, metric_func)
-            diversity[metric_name] = metric_value
-            if warning:
-                warnings.append(warning)
+        wrist_pose_metrics, wrist_warnings = build_wrist_pose_diversity(data_lst, job.wrist_approach_axes)
+        bimanual_relative_metrics, bimanual_warnings = build_bimanual_relative_approach_diversity(
+            data_lst,
+            job.wrist_approach_axes,
+        )
+        diversity = {
+            "wrist_pose": wrist_pose_metrics,
+            "bimanual_relative_approach": bimanual_relative_metrics,
+            # Backward-compatible section name used by the previous script version.
+            "bimanual_fingertip_angle": bimanual_relative_metrics,
+            # Backward-compatible aliases used by older downstream notebooks.
+            "wrist_tabletop_approach_coverage": wrist_pose_metrics.get("approach_coverage"),
+            "wrist_approach_pairwise_distance": wrist_pose_metrics.get("approach_pairwise_distance"),
+            "bimanual_relative_approach_geometry": bimanual_relative_metrics.get("hemisphere_coverage"),
+            "bimanual_relative_approach_pairwise_distance": bimanual_relative_metrics.get("hemisphere_pairwise_distance"),
+            "joint_position": wrist_pose_metrics.get("joint_position_pca"),
+        }
+        warnings.extend(wrist_warnings)
+        warnings.extend(bimanual_warnings)
     else:
         warnings.append("skip diversity: fewer than two successful grasps")
         diversity = {
+            "wrist_pose": {
+                "approach_coverage": None,
+                "approach_pairwise_distance": None,
+                "joint_position_pca": None,
+            },
+            "bimanual_relative_approach": {
+                "applicable": False,
+                "metric_source": "left_wrist_approach_axis_in_right_wrist_frame_positive_hemisphere",
+                "note": (
+                    "Left wrist approach axis is expressed in the right wrist local frame. "
+                    "Coverage is computed on the positive hemisphere defined by the right "
+                    "hand local palm-side approach axis."
+                ),
+                "hemisphere_coverage": None,
+                "hemisphere_pairwise_distance": None,
+                "angle_coverage": None,
+                "angle_pairwise_distance": None,
+            },
+            "bimanual_fingertip_angle": {
+                "applicable": False,
+                "metric_source": "left_wrist_approach_axis_in_right_wrist_frame_positive_hemisphere",
+                "note": (
+                    "Left wrist approach axis is expressed in the right wrist local frame. "
+                    "Coverage is computed on the positive hemisphere defined by the right "
+                    "hand local palm-side approach axis."
+                ),
+                "hemisphere_coverage": None,
+                "hemisphere_pairwise_distance": None,
+                "angle_coverage": None,
+                "angle_pairwise_distance": None,
+            },
             "wrist_tabletop_approach_coverage": None,
+            "wrist_approach_pairwise_distance": None,
             "bimanual_relative_approach_geometry": None,
+            "bimanual_relative_approach_pairwise_distance": None,
             "joint_position": None,
         }
 
@@ -494,7 +748,7 @@ def summarize_grasp_type(
         "evaluated_grasps": eval_count,
         "successful_grasps": int(success_count),
         "success_rate": float(success_count / eval_count) if eval_count else None,
-        "failure_reasons": summarize_failure_reasons(records, trans_thre, angle_thre),
+        "failure_reasons": summarize_failure_reasons(records, trans_thre, angle_thre, self_pene_thre),
         "evaluated_scenes": len(scene_ids),
         "successful_scenes": len(success_scene_ids),
         "diversity_success_only": True,
@@ -541,8 +795,136 @@ def summarize_scene_coverage(records_by_type: dict[str, list[EvalRecord]], grasp
     )
     return {
         "evaluated_scenes": scene_num,
+        "successful_scenes": int(sum(1 for type_count in successful_type_count_by_scene.values() if type_count > 0)),
+        "scene_success_rate": (
+            float(sum(1 for type_count in successful_type_count_by_scene.values() if type_count > 0) / scene_num)
+            if scene_num
+            else None
+        ),
         "average_successful_grasp_type_num": average_successful_type_num,
         "successful_grasp_type_count_distribution": distribution,
+    }
+
+
+def summarize_object_scales(records_by_type: dict[str, list[EvalRecord]]) -> list[dict[str, Any]]:
+    """Summarize evaluated/successful grasps by object scale.
+
+    Args:
+        records_by_type: Mapping from grasp type to loaded evaluation records.
+
+    Returns:
+        Ordered list of JSON-serializable object-scale statistics.
+    """
+
+    evaluated_counts = Counter()
+    successful_counts = Counter()
+    for records in records_by_type.values():
+        for record in records:
+            scale_key = object_scale_key_from_data(record.data)
+            evaluated_counts[scale_key] += 1
+            if record.success:
+                successful_counts[scale_key] += 1
+
+    scale_stats = []
+    for scale_key in sorted(evaluated_counts, key=object_scale_sort_key):
+        item = ObjectScaleStats(
+            scale_key=scale_key,
+            evaluated_grasps=int(evaluated_counts[scale_key]),
+            successful_grasps=int(successful_counts[scale_key]),
+        )
+        scale_stats.append(
+            {
+                "object_scale": item.scale_key,
+                "evaluated_grasps": item.evaluated_grasps,
+                "successful_grasps": item.successful_grasps,
+                "success_rate": item.success_rate,
+            }
+        )
+    return scale_stats
+
+
+def build_metric_sections(
+    per_type_summary: list[dict[str, Any]],
+    object_scale_summary: list[dict[str, Any]],
+    scene_coverage: dict[str, Any],
+    total_eval: int,
+    total_success: int,
+) -> dict[str, Any]:
+    """Organize metrics into plotting/table friendly JSON sections.
+
+    Args:
+        per_type_summary: Per-grasp-type summary dictionaries.
+        object_scale_summary: Object-scale summary dictionaries.
+        scene_coverage: Scene-level successful grasp-type coverage summary.
+        total_eval: Total number of evaluated grasps across selected types.
+        total_success: Total number of successful grasps across selected types.
+
+    Returns:
+        Dictionary with `data_counts`, `success_rates`, `diversity`, and
+        `failure_reasons` sections.
+    """
+
+    per_type_counts = {
+        item["grasp_type"]: {
+            "evaluated_grasps": item["evaluated_grasps"],
+            "successful_grasps": item["successful_grasps"],
+        }
+        for item in per_type_summary
+    }
+    per_type_sr = {
+        item["grasp_type"]: item["success_rate"]
+        for item in per_type_summary
+    }
+    per_scale_counts = {
+        item["object_scale"]: {
+            "evaluated_grasps": item["evaluated_grasps"],
+            "successful_grasps": item["successful_grasps"],
+        }
+        for item in object_scale_summary
+    }
+    per_scale_sr = {
+        item["object_scale"]: item["success_rate"]
+        for item in object_scale_summary
+    }
+    per_type_diversity = {
+        item["grasp_type"]: {
+            "diversity_success_only": item["diversity_success_only"],
+            "diversity_grasps": item["diversity_grasps"],
+            "wrist_pose": item["diversity"]["wrist_pose"],
+            "bimanual_relative_approach": item["diversity"]["bimanual_relative_approach"],
+            "bimanual_fingertip_angle": item["diversity"]["bimanual_fingertip_angle"],
+        }
+        for item in per_type_summary
+    }
+    return {
+        "data_counts": {
+            "total_grasps": int(total_eval),
+            "total_successful_grasps": int(total_success),
+            "by_grasp_type": per_type_counts,
+            "by_object_scale": per_scale_counts,
+        },
+        "success_rates": {
+            "overall": float(total_success / total_eval) if total_eval else None,
+            "scene": scene_coverage["scene_success_rate"],
+            "by_grasp_type": per_type_sr,
+            "by_object_scale": per_scale_sr,
+        },
+        "diversity": {
+            "success_only": True,
+            "grasp_type_scene_coverage": {
+                "average_successful_grasp_type_num": scene_coverage["average_successful_grasp_type_num"],
+                "successful_grasp_type_count_distribution": scene_coverage[
+                    "successful_grasp_type_count_distribution"
+                ],
+            },
+            "by_grasp_type": per_type_diversity,
+        },
+        "failure_reasons": {
+            "by_grasp_type": {
+                item["grasp_type"]: item["failure_reasons"]
+                for item in per_type_summary
+            },
+        },
     }
 
 
@@ -590,8 +972,22 @@ def format_metric(value: Any | None) -> str:
     if isinstance(value, list):
         return format_diversity(value)
     if isinstance(value, dict):
+        if "pair_num" in value:
+            unit = "deg" if value.get("distance_unit") == "degree" else value.get("distance_unit", "")
+            pair_text = str(value["pair_num"])
+            if value.get("estimated"):
+                pair_text = f"{value['sampled_pair_num']}/{value['total_pair_num']}"
+            return (
+                f"mean={value['mean']:.2f}{unit}, std={value['std']:.2f}{unit}, "
+                f"median={value['median']:.2f}{unit}, pairs={pair_text}"
+            )
         if "coverage" in value:
             formatted = f"{100.0 * value['coverage']:.2f}%({value['occupied_bins']}/{value['total_bins']})"
+            if "polar_coverage" in value:
+                formatted += (
+                    f", polar={100.0 * value['polar_coverage']:.2f}%"
+                    f"({value['occupied_polar_bins']}/{value['total_polar_bins']})"
+                )
             if "plane_angle_coverage" in value:
                 formatted += (
                     f", angle={100.0 * value['plane_angle_coverage']:.2f}%"
@@ -604,6 +1000,8 @@ def format_metric(value: Any | None) -> str:
                 )
             if "below_table_percent" in value:
                 formatted += f", below={100.0 * value['below_table_percent']:.2f}%"
+            if "negative_hemisphere_percent" in value:
+                formatted += f", neg={100.0 * value['negative_hemisphere_percent']:.2f}%"
             return formatted
         if "theta_coverage" in value:
             return (
@@ -625,6 +1023,7 @@ def format_failure_reasons(failure_reasons: dict[str, Any]) -> str:
 
     reason_labels = (
         ("pregrasp_severe_penetration", "pene"),
+        ("self_penetration", "self"),
         ("position_error", "pos"),
         ("rotation_error", "rot"),
         ("unknown", "unknown"),
@@ -653,6 +1052,8 @@ def print_summary(summary: dict[str, Any]) -> None:
     print("Scene successful grasp-type coverage")
     scene_summary = summary["scene_coverage"]
     print(f"  evaluated scenes: {scene_summary['evaluated_scenes']}")
+    print(f"  successful scenes: {scene_summary['successful_scenes']}")
+    print(f"  scene success rate: {format_rate(scene_summary['scene_success_rate'])}")
     avg_type_num = scene_summary["average_successful_grasp_type_num"]
     print(f"  average successful grasp types per scene: {avg_type_num:.4f}" if avg_type_num is not None else "  average successful grasp types per scene: n/a")
     for type_count, item in scene_summary["successful_grasp_type_count_distribution"].items():
@@ -662,7 +1063,12 @@ def print_summary(summary: dict[str, Any]) -> None:
     print(f"  evaluated grasps: {summary['overall']['evaluated_grasps']}")
     print(f"  successful grasps: {summary['overall']['successful_grasps']}")
     print(f"  success rate: {format_rate(summary['overall']['success_rate'])}")
-    print(f"  failure classification thresholds: trans<{summary['thresholds']['trans_thre']}, angle<{summary['thresholds']['angle_thre']}")
+    print(
+        "  failure classification thresholds: "
+        f"trans<{summary['thresholds']['trans_thre']}, "
+        f"angle<{summary['thresholds']['angle_thre']}, "
+        f"self_pene<={summary['thresholds']['self_pene_thre']}"
+    )
     print(f"  diversity success only: {summary['diversity_success_only']}")
     print()
     print("Per grasp type")
@@ -676,13 +1082,17 @@ def print_summary(summary: dict[str, Any]) -> None:
         "succ_scenes",
         "div_n",
         "approach_grid",
-        "rel_approach",
+        "approach_pair",
+        "rel_grid",
+        "rel_pair",
         "joint_div",
     )
     print("  " + " | ".join(header))
     print("  " + " | ".join("-" * len(item) for item in header))
     for item in summary["per_grasp_type"]:
         diversity = item["diversity"]
+        wrist_pose = diversity["wrist_pose"]
+        bimanual_relative = diversity["bimanual_relative_approach"]
         row = (
             item["grasp_type"],
             str(item["evaluated_grasps"]),
@@ -692,11 +1102,28 @@ def print_summary(summary: dict[str, Any]) -> None:
             str(item["evaluated_scenes"]),
             str(item["successful_scenes"]),
             str(item["diversity_grasps"]),
-            format_metric(diversity.get("wrist_tabletop_approach_coverage")),
-            format_metric(diversity.get("bimanual_relative_approach_geometry")),
-            format_metric(diversity.get("joint_position")),
+            format_metric(wrist_pose.get("approach_coverage")),
+            format_metric(wrist_pose.get("approach_pairwise_distance")),
+            format_metric(bimanual_relative.get("hemisphere_coverage")),
+            format_metric(bimanual_relative.get("hemisphere_pairwise_distance")),
+            format_metric(wrist_pose.get("joint_position_pca")),
         )
         print("  " + " | ".join(row))
+
+    if summary["per_object_scale"]:
+        print()
+        print("Per object scale")
+        header = ("object_scale", "eval", "succ", "succ_rate")
+        print("  " + " | ".join(header))
+        print("  " + " | ".join("-" * len(item) for item in header))
+        for item in summary["per_object_scale"]:
+            row = (
+                item["object_scale"],
+                str(item["evaluated_grasps"]),
+                str(item["successful_grasps"]),
+                format_rate(item["success_rate"]),
+            )
+            print("  " + " | ".join(row))
 
     warnings = summary["warnings"] + [
         f"{item['grasp_type']}: {warning}"
@@ -726,13 +1153,30 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
     warnings = []
 
     for job in jobs:
-        records, job_warnings = load_eval_records(job)
+        records, job_warnings = load_eval_records(job, args.self_pene_thre)
         records_by_type[job.grasp_type] = records
         warnings.extend(job_warnings)
-        per_type_summary.append(summarize_grasp_type(job, records, args.trans_thre, args.angle_thre))
+        per_type_summary.append(
+            summarize_grasp_type(
+                job,
+                records,
+                args.trans_thre,
+                args.angle_thre,
+                args.self_pene_thre,
+            )
+        )
 
     total_eval = sum(item["evaluated_grasps"] for item in per_type_summary)
     total_success = sum(item["successful_grasps"] for item in per_type_summary)
+    scene_coverage = summarize_scene_coverage(records_by_type, len(jobs))
+    object_scale_summary = summarize_object_scales(records_by_type)
+    metric_sections = build_metric_sections(
+        per_type_summary,
+        object_scale_summary,
+        scene_coverage,
+        total_eval,
+        total_success,
+    )
     return {
         "hand": args.hand,
         "run_name": args.run_name,
@@ -741,14 +1185,20 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
         "thresholds": {
             "trans_thre": float(args.trans_thre),
             "angle_thre": float(args.angle_thre),
+            "self_pene_thre": float(args.self_pene_thre),
         },
         "diversity_success_only": True,
-        "scene_coverage": summarize_scene_coverage(records_by_type, len(jobs)),
+        "data_counts": metric_sections["data_counts"],
+        "success_rates": metric_sections["success_rates"],
+        "diversity": metric_sections["diversity"],
+        "failure_reasons": metric_sections["failure_reasons"],
+        "scene_coverage": scene_coverage,
         "overall": {
             "evaluated_grasps": int(total_eval),
             "successful_grasps": int(total_success),
             "success_rate": float(total_success / total_eval) if total_eval else None,
         },
+        "per_object_scale": object_scale_summary,
         "per_grasp_type": per_type_summary,
         "warnings": warnings,
     }
