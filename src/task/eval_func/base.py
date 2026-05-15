@@ -344,6 +344,17 @@ class BaseEval:
         raise NotImplementedError
 
     def _eval_pene_and_contact(self):
+        """Evaluate contact metrics and optional hand-hand geom distance.
+
+        Args:
+            None.
+
+        Returns:
+            Tuple containing object penetration, hand-hand contact penetration,
+            object contact count, object contact distance, object contact
+            consistency, and an optional geom-distance diagnostic dictionary.
+        """
+
         eval_config = self.configs.task.pene_contact_metrics
 
         ho_contact, hh_contact = self.mj_ho.get_contact_info(
@@ -377,7 +388,18 @@ class BaseEval:
         self_pene = -min([c["contact_dist"] for c in hh_contact]) if len(hh_contact) > 0 else 0
         self_pene = max(self_pene, 0)
 
-        return ho_pene, self_pene, contact_number, contact_distance, contact_consistency
+        self_signed_distance = {}
+        if not bool(getattr(eval_config, "compute_self_geom_distance", False)):
+            return ho_pene, self_pene, contact_number, contact_distance, contact_consistency, self_signed_distance
+
+        # Keep contact-based self penetration and geom-distance diagnostics independent.
+        self_signed_distance = self.mj_ho.get_hand_hand_signed_distance(
+            self.grasp_data["grasp_qpos"],
+            self.grasp_data["obj_pose"],
+            valid_body_names=self.configs.hand.valid_body_name,
+        )
+
+        return ho_pene, self_pene, contact_number, contact_distance, contact_consistency, self_signed_distance
 
     def _eval_simulate_under_extforce(self):
         eval_config = self.configs.task.simulation_metrics
@@ -596,7 +618,9 @@ class BaseEval:
                 eval_results["contact_num"],
                 eval_results["contact_dist"],
                 eval_results["contact_consis"],
+                self_signed_distance,
             ) = self._eval_pene_and_contact()
+            eval_results.update(self_signed_distance)
 
         if self.configs.task.analytic_fc_metrics is not None:
             fc_metric_results = self._eval_analytic_fc_metric()

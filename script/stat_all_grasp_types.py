@@ -39,11 +39,13 @@ from task.statistic import (  # noqa: E402
 
 DEFAULT_TRANS_THRE = 0.05
 DEFAULT_ANGLE_THRE = 15.0
-DEFAULT_SELF_PENE_THRE = -0.01
+DEFAULT_SELF_PENE_THRE = 0.0
+DEFAULT_HAND_GEOM_DIST_THRE = 0.000
 SEVERE_PENETRATION_SENTINEL = 100.0
 FAILURE_REASON_NAMES = (
     "pregrasp_severe_penetration",
     "self_penetration",
+    "self_geom_distance",
     "position_error",
     "rotation_error",
     "unknown",
@@ -175,6 +177,22 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         help="Analyze only one grasp type. Repeat to select multiple. Default: all five grasp types.",
     )
+    both_three_group = parser.add_mutually_exclusive_group()
+    both_three_group.add_argument(
+        "--include-both-three",
+        "--include_both_three",
+        dest="include_both_three",
+        action="store_true",
+        default=True,
+        help="Include both_three in all statistics. This is the default.",
+    )
+    both_three_group.add_argument(
+        "--exclude-both-three",
+        "--exclude_both_three",
+        dest="include_both_three",
+        action="store_false",
+        help="Exclude both_three before loading records, so all statistics ignore that grasp type.",
+    )
     parser.add_argument(
         "--json-path",
         "--json_path",
@@ -205,8 +223,20 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=DEFAULT_SELF_PENE_THRE,
         help=(
-            "Hand-hand penetration threshold in meters. Grasps with self_pene greater "
-            f"than this value are counted as failures. Default: {DEFAULT_SELF_PENE_THRE}."
+            "Deprecated compatibility option. Failure classification now always "
+            "counts grasps with self_pene > 0 as self-penetration failures."
+        ),
+    )
+    parser.add_argument(
+        "--hand-geom-dist-thre",
+        "--hand_geom_dist_thre",
+        dest="hand_geom_dist_thre",
+        type=float,
+        default=DEFAULT_HAND_GEOM_DIST_THRE,
+        help=(
+            "Minimum allowed nearest hand-hand geom clearance in meters. Grasps "
+            "with geom distance below this value are counted as failures. "
+            f"Default: {DEFAULT_HAND_GEOM_DIST_THRE}."
         ),
     )
     parser.add_argument("--no-json", action="store_true", help="Print only; do not save a JSON summary.")
@@ -232,7 +262,13 @@ def load_hand_wrist_approach_axes(hand_name: str) -> Any:
     return OmegaConf.to_container(approach_axes, resolve=True)
 
 
-def build_stat_jobs(hand_family: str, run_name: str, save_root: Path, grasp_types: list[str] | None) -> list[StatJob]:
+def build_stat_jobs(
+    hand_family: str,
+    run_name: str,
+    save_root: Path,
+    grasp_types: list[str] | None,
+    include_both_three: bool = True,
+) -> list[StatJob]:
     """Create stat jobs with the same output naming as the all-type evaluation script.
 
     Args:
@@ -240,12 +276,16 @@ def build_stat_jobs(hand_family: str, run_name: str, save_root: Path, grasp_type
         run_name: Base run name used during evaluation.
         save_root: Root output folder containing per-type output folders.
         grasp_types: Optional selected grasp type names.
+        include_both_three: Whether to keep `both_three` in the selected grasp
+            types. When False, `both_three` is removed before any data is loaded.
 
     Returns:
         Ordered list of stat jobs.
     """
 
     selected_grasp_types = set(grasp_types or GRASP_TYPE_NAMES)
+    if not include_both_three:
+        selected_grasp_types.discard("both_three")
     hand_config = HAND_CONFIGS[hand_family]
     jobs = []
     for suffix, hand_kind, _tabletop_split in GRASP_TYPES:
@@ -295,21 +335,55 @@ def success_from_data(data: dict[str, Any], rel_path: Path, succ_rel_paths: set[
     return rel_path.as_posix() in succ_rel_paths
 
 
-def has_excessive_self_penetration(data: dict[str, Any], self_pene_thre: float) -> bool:
-    """Check whether one evaluated grasp exceeds the self-penetration threshold.
+def has_self_collision(data: dict[str, Any]) -> bool:
+    """Check whether one evaluated grasp has any hand-hand contact penetration.
 
     Args:
         data: Evaluation dictionary loaded from an `.npy` file.
-        self_pene_thre: Maximum allowed hand-hand penetration depth in meters.
 
     Returns:
-        True if `self_pene` exists and is greater than `self_pene_thre`; otherwise
+        True if `self_pene` exists and is strictly greater than zero; otherwise
         False. Missing or non-finite values are not treated as self-penetration
         failures here so older/early-failed eval files fall back to other reasons.
     """
 
     self_pene = scalar_float_from_data(data, "self_pene")
-    return self_pene is not None and self_pene > self_pene_thre
+    return self_pene is not None and self_pene > 0.0
+
+
+def hand_geom_distance_from_data(data: dict[str, Any]) -> float | None:
+    """Read nearest hand-hand geom clearance from one evaluation record.
+
+    Args:
+        data: Evaluation dictionary loaded from an `.npy` file.
+
+    Returns:
+        Non-negative nearest hand-hand geom clearance in meters if
+        `self_signed_dist` is available and finite; otherwise None. The eval
+        field uses penetration-positive signed distance, so clearance is the
+        negated signed distance.
+    """
+
+    signed_dist = scalar_float_from_data(data, "self_signed_dist")
+    if signed_dist is None:
+        return None
+    return -signed_dist
+
+
+def has_too_close_hand_geoms(data: dict[str, Any], hand_geom_dist_thre: float) -> bool:
+    """Check whether nearest hand-hand geom clearance is below threshold.
+
+    Args:
+        data: Evaluation dictionary loaded from an `.npy` file.
+        hand_geom_dist_thre: Minimum allowed nearest hand-hand geom clearance in meters.
+
+    Returns:
+        True if the nearest hand-hand geom clearance exists and is smaller than
+        `hand_geom_dist_thre`; otherwise False.
+    """
+
+    geom_distance = hand_geom_distance_from_data(data)
+    return geom_distance is not None and geom_distance < hand_geom_dist_thre
 
 
 def scalar_float_from_data(data: dict[str, Any], key: str) -> float | None:
@@ -365,12 +439,54 @@ def object_scale_sort_key(scale_key: str) -> tuple[int, float | str]:
         return (1, scale_key)
 
 
+def summarize_scalar_metric(records: list[EvalRecord], metric_key: str) -> dict[str, Any]:
+    """Summarize one scalar metric over evaluation records.
+
+    Args:
+        records: Evaluation records to inspect.
+        metric_key: Scalar metric field name, such as `qp_metric`.
+
+    Returns:
+        JSON-serializable metric statistics. `count` is the number of records
+        with a finite scalar value for `metric_key`; aggregate values are None
+        when no finite value exists.
+    """
+
+    values = [
+        metric_value
+        for record in records
+        for metric_value in [scalar_float_from_data(record.data, metric_key)]
+        if metric_value is not None
+    ]
+    if not values:
+        return {
+            "metric": metric_key,
+            "count": 0,
+            "mean": None,
+            "std": None,
+            "median": None,
+            "min": None,
+            "max": None,
+        }
+
+    value_array = np.asarray(values, dtype=np.float64)
+    return {
+        "metric": metric_key,
+        "count": int(value_array.size),
+        "mean": float(np.mean(value_array)),
+        "std": float(np.std(value_array)),
+        "median": float(np.median(value_array)),
+        "min": float(np.min(value_array)),
+        "max": float(np.max(value_array)),
+    }
+
+
 def classify_failure_reason(
     data: dict[str, Any],
     success: bool,
     trans_thre: float,
     angle_thre: float,
-    self_pene_thre: float,
+    hand_geom_dist_thre: float,
 ) -> str | None:
     """Classify one failed grasp into the main simulation failure reasons.
 
@@ -379,8 +495,7 @@ def classify_failure_reason(
         success: Whether this grasp succeeded in simulation.
         trans_thre: Translation threshold used by evaluation success checks.
         angle_thre: Rotation threshold in degrees used by evaluation success checks.
-        self_pene_thre: Hand-hand penetration threshold used to classify
-            self-penetration failures.
+        hand_geom_dist_thre: Minimum allowed nearest hand-hand geom clearance in meters.
 
     Returns:
         Failure reason key for failed grasps, None for successful grasps.
@@ -391,8 +506,10 @@ def classify_failure_reason(
 
     delta_pos = scalar_float_from_data(data, "delta_pos")
     delta_angle = scalar_float_from_data(data, "delta_angle")
-    if has_excessive_self_penetration(data, self_pene_thre):
+    if has_self_collision(data):
         return "self_penetration"
+    if has_too_close_hand_geoms(data, hand_geom_dist_thre):
+        return "self_geom_distance"
 
     # `_eval_simulate_under_extforce` records this sentinel when initial hand-object
     # or hand-hand penetration exceeds `task.simulation_metrics.max_pene`.
@@ -420,7 +537,7 @@ def summarize_failure_reasons(
     records: list[EvalRecord],
     trans_thre: float,
     angle_thre: float,
-    self_pene_thre: float,
+    hand_geom_dist_thre: float,
 ) -> dict[str, Any]:
     """Summarize failure-reason counts and rates for one grasp type.
 
@@ -428,8 +545,7 @@ def summarize_failure_reasons(
         records: Loaded evaluation records for one grasp type.
         trans_thre: Translation threshold used to classify position-error failures.
         angle_thre: Rotation threshold in degrees used to classify rotation-only failures.
-        self_pene_thre: Hand-hand penetration threshold used to classify
-            self-penetration failures.
+        hand_geom_dist_thre: Minimum allowed nearest hand-hand geom clearance in meters.
 
     Returns:
         JSON-serializable dictionary containing counts and ratios for each reason.
@@ -438,7 +554,7 @@ def summarize_failure_reasons(
     reason_counts = Counter()
     failed_count = 0
     for record in records:
-        reason = classify_failure_reason(record.data, record.success, trans_thre, angle_thre, self_pene_thre)
+        reason = classify_failure_reason(record.data, record.success, trans_thre, angle_thre, hand_geom_dist_thre)
         if reason is None:
             continue
         failed_count += 1
@@ -460,13 +576,13 @@ def summarize_failure_reasons(
     }
 
 
-def load_eval_records(job: StatJob, self_pene_thre: float) -> tuple[list[EvalRecord], list[str]]:
+def load_eval_records(job: StatJob, hand_geom_dist_thre: float) -> tuple[list[EvalRecord], list[str]]:
     """Load all evaluation records for one grasp type.
 
     Args:
         job: Stat job describing one grasp type output folder.
-        self_pene_thre: Hand-hand penetration threshold used to override the
-            raw simulation success flag.
+        hand_geom_dist_thre: Minimum allowed nearest hand-hand geom clearance used
+            to override the raw simulation success flag.
 
     Returns:
         Pair of loaded records and warning messages collected while reading.
@@ -490,7 +606,11 @@ def load_eval_records(job: StatJob, self_pene_thre: float) -> tuple[list[EvalRec
         data = np.load(eval_path, allow_pickle=True).item()
         data["_source_path"] = str(eval_path)
         raw_success = success_from_data(data, rel_path, succ_rel_paths)
-        success = raw_success and not has_excessive_self_penetration(data, self_pene_thre)
+        success = (
+            raw_success
+            and not has_self_collision(data)
+            and not has_too_close_hand_geoms(data, hand_geom_dist_thre)
+        )
         records.append(
             EvalRecord(
                 scene_id=scene_id_from_eval_path(eval_path, job.eval_dir),
@@ -656,7 +776,7 @@ def summarize_grasp_type(
     records: list[EvalRecord],
     trans_thre: float,
     angle_thre: float,
-    self_pene_thre: float,
+    hand_geom_dist_thre: float,
 ) -> dict[str, Any]:
     """Summarize grasp-level and diversity metrics for one grasp type.
 
@@ -665,8 +785,7 @@ def summarize_grasp_type(
         records: Loaded evaluation records for this grasp type.
         trans_thre: Translation threshold used to classify position-error failures.
         angle_thre: Rotation threshold in degrees used to classify rotation-only failures.
-        self_pene_thre: Hand-hand penetration threshold used to classify
-            self-penetration failures.
+        hand_geom_dist_thre: Minimum allowed nearest hand-hand geom clearance in meters.
 
     Returns:
         JSON-serializable summary dictionary.
@@ -748,7 +867,9 @@ def summarize_grasp_type(
         "evaluated_grasps": eval_count,
         "successful_grasps": int(success_count),
         "success_rate": float(success_count / eval_count) if eval_count else None,
-        "failure_reasons": summarize_failure_reasons(records, trans_thre, angle_thre, self_pene_thre),
+        "qp_metric": summarize_scalar_metric(records, "qp_metric"),
+        "qp_metric_success": summarize_scalar_metric(diversity_records, "qp_metric"),
+        "failure_reasons": summarize_failure_reasons(records, trans_thre, angle_thre, hand_geom_dist_thre),
         "evaluated_scenes": len(scene_ids),
         "successful_scenes": len(success_scene_ids),
         "diversity_success_only": True,
@@ -807,7 +928,7 @@ def summarize_scene_coverage(records_by_type: dict[str, list[EvalRecord]], grasp
 
 
 def summarize_object_scales(records_by_type: dict[str, list[EvalRecord]]) -> list[dict[str, Any]]:
-    """Summarize evaluated/successful grasps by object scale.
+    """Summarize evaluated/successful grasps and qp metrics by object scale.
 
     Args:
         records_by_type: Mapping from grasp type to loaded evaluation records.
@@ -818,12 +939,16 @@ def summarize_object_scales(records_by_type: dict[str, list[EvalRecord]]) -> lis
 
     evaluated_counts = Counter()
     successful_counts = Counter()
+    records_by_scale: dict[str, list[EvalRecord]] = defaultdict(list)
+    successful_records_by_scale: dict[str, list[EvalRecord]] = defaultdict(list)
     for records in records_by_type.values():
         for record in records:
             scale_key = object_scale_key_from_data(record.data)
             evaluated_counts[scale_key] += 1
+            records_by_scale[scale_key].append(record)
             if record.success:
                 successful_counts[scale_key] += 1
+                successful_records_by_scale[scale_key].append(record)
 
     scale_stats = []
     for scale_key in sorted(evaluated_counts, key=object_scale_sort_key):
@@ -838,6 +963,8 @@ def summarize_object_scales(records_by_type: dict[str, list[EvalRecord]]) -> lis
                 "evaluated_grasps": item.evaluated_grasps,
                 "successful_grasps": item.successful_grasps,
                 "success_rate": item.success_rate,
+                "qp_metric": summarize_scalar_metric(records_by_scale[scale_key], "qp_metric"),
+                "qp_metric_success": summarize_scalar_metric(successful_records_by_scale[scale_key], "qp_metric"),
             }
         )
     return scale_stats
@@ -875,6 +1002,14 @@ def build_metric_sections(
         item["grasp_type"]: item["success_rate"]
         for item in per_type_summary
     }
+    per_type_qp_metric = {
+        item["grasp_type"]: item["qp_metric"]
+        for item in per_type_summary
+    }
+    per_type_qp_metric_success = {
+        item["grasp_type"]: item["qp_metric_success"]
+        for item in per_type_summary
+    }
     per_scale_counts = {
         item["object_scale"]: {
             "evaluated_grasps": item["evaluated_grasps"],
@@ -884,6 +1019,14 @@ def build_metric_sections(
     }
     per_scale_sr = {
         item["object_scale"]: item["success_rate"]
+        for item in object_scale_summary
+    }
+    per_scale_qp_metric = {
+        item["object_scale"]: item["qp_metric"]
+        for item in object_scale_summary
+    }
+    per_scale_qp_metric_success = {
+        item["object_scale"]: item["qp_metric_success"]
         for item in object_scale_summary
     }
     per_type_diversity = {
@@ -908,6 +1051,16 @@ def build_metric_sections(
             "scene": scene_coverage["scene_success_rate"],
             "by_grasp_type": per_type_sr,
             "by_object_scale": per_scale_sr,
+        },
+        "analytic_metrics": {
+            "qp_metric": {
+                "by_grasp_type": per_type_qp_metric,
+                "by_object_scale": per_scale_qp_metric,
+            },
+            "qp_metric_success": {
+                "by_grasp_type": per_type_qp_metric_success,
+                "by_object_scale": per_scale_qp_metric_success,
+            },
         },
         "diversity": {
             "success_only": True,
@@ -1011,6 +1164,25 @@ def format_metric(value: Any | None) -> str:
     return str(value)
 
 
+def format_scalar_metric_summary(metric_summary: dict[str, Any] | None) -> str:
+    """Format scalar metric statistics for terminal output.
+
+    Args:
+        metric_summary: Summary generated by `summarize_scalar_metric`.
+
+    Returns:
+        Compact text with count, mean, and median, or `n/a` when unavailable.
+    """
+
+    if not metric_summary or metric_summary.get("count", 0) == 0:
+        return "n/a"
+    return (
+        f"n={metric_summary['count']}, "
+        f"mean={metric_summary['mean']:.4g}, "
+        f"median={metric_summary['median']:.4g}"
+    )
+
+
 def format_failure_reasons(failure_reasons: dict[str, Any]) -> str:
     """Format failure reason percentages for terminal output.
 
@@ -1024,6 +1196,7 @@ def format_failure_reasons(failure_reasons: dict[str, Any]) -> str:
     reason_labels = (
         ("pregrasp_severe_penetration", "pene"),
         ("self_penetration", "self"),
+        ("self_geom_distance", "geom"),
         ("position_error", "pos"),
         ("rotation_error", "rot"),
         ("unknown", "unknown"),
@@ -1067,7 +1240,8 @@ def print_summary(summary: dict[str, Any]) -> None:
         "  failure classification thresholds: "
         f"trans<{summary['thresholds']['trans_thre']}, "
         f"angle<{summary['thresholds']['angle_thre']}, "
-        f"self_pene<={summary['thresholds']['self_pene_thre']}"
+        f"self_pene<=0, "
+        f"hand_geom_dist>={summary['thresholds']['hand_geom_dist_thre']}"
     )
     print(f"  diversity success only: {summary['diversity_success_only']}")
     print()
@@ -1077,6 +1251,8 @@ def print_summary(summary: dict[str, Any]) -> None:
         "eval",
         "succ",
         "succ_rate",
+        "qp_metric",
+        "qp_success",
         "failure_reasons",
         "scenes",
         "succ_scenes",
@@ -1098,6 +1274,8 @@ def print_summary(summary: dict[str, Any]) -> None:
             str(item["evaluated_grasps"]),
             str(item["successful_grasps"]),
             format_rate(item["success_rate"]),
+            format_scalar_metric_summary(item.get("qp_metric")),
+            format_scalar_metric_summary(item.get("qp_metric_success")),
             format_failure_reasons(item["failure_reasons"]),
             str(item["evaluated_scenes"]),
             str(item["successful_scenes"]),
@@ -1113,7 +1291,7 @@ def print_summary(summary: dict[str, Any]) -> None:
     if summary["per_object_scale"]:
         print()
         print("Per object scale")
-        header = ("object_scale", "eval", "succ", "succ_rate")
+        header = ("object_scale", "eval", "succ", "succ_rate", "qp_metric", "qp_success")
         print("  " + " | ".join(header))
         print("  " + " | ".join("-" * len(item) for item in header))
         for item in summary["per_object_scale"]:
@@ -1122,6 +1300,8 @@ def print_summary(summary: dict[str, Any]) -> None:
                 str(item["evaluated_grasps"]),
                 str(item["successful_grasps"]),
                 format_rate(item["success_rate"]),
+                format_scalar_metric_summary(item.get("qp_metric")),
+                format_scalar_metric_summary(item.get("qp_metric_success")),
             )
             print("  " + " | ".join(row))
 
@@ -1147,13 +1327,19 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
         JSON-serializable aggregate summary.
     """
 
-    jobs = build_stat_jobs(args.hand, args.run_name, Path(args.save_root), args.grasp_types)
+    jobs = build_stat_jobs(
+        args.hand,
+        args.run_name,
+        Path(args.save_root),
+        args.grasp_types,
+        include_both_three=args.include_both_three,
+    )
     records_by_type = {}
     per_type_summary = []
     warnings = []
 
     for job in jobs:
-        records, job_warnings = load_eval_records(job, args.self_pene_thre)
+        records, job_warnings = load_eval_records(job, args.hand_geom_dist_thre)
         records_by_type[job.grasp_type] = records
         warnings.extend(job_warnings)
         per_type_summary.append(
@@ -1162,7 +1348,7 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
                 records,
                 args.trans_thre,
                 args.angle_thre,
-                args.self_pene_thre,
+                args.hand_geom_dist_thre,
             )
         )
 
@@ -1182,14 +1368,17 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
         "run_name": args.run_name,
         "save_root": args.save_root,
         "grasp_types": [job.grasp_type for job in jobs],
+        "include_both_three": bool(args.include_both_three),
         "thresholds": {
             "trans_thre": float(args.trans_thre),
             "angle_thre": float(args.angle_thre),
-            "self_pene_thre": float(args.self_pene_thre),
+            "self_pene_thre": 0.0,
+            "hand_geom_dist_thre": float(args.hand_geom_dist_thre),
         },
         "diversity_success_only": True,
         "data_counts": metric_sections["data_counts"],
         "success_rates": metric_sections["success_rates"],
+        "analytic_metrics": metric_sections["analytic_metrics"],
         "diversity": metric_sections["diversity"],
         "failure_reasons": metric_sections["failure_reasons"],
         "scene_coverage": scene_coverage,

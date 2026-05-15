@@ -23,8 +23,10 @@ simulation_metrics:
 analytic_fc_metrics: 
   contact_tip_only: False # True 
   contact_threshold: 0.005
-  type: ['qp', 'qp_dfc', 'q1', 'tdg', 'dfc']
+  # type: ['qp', 'qp_dfc', 'q1', 'tdg', 'dfc']
+  type: ['qp']
 
 pene_contact_metrics: 
   contact_margin: 0.01  # unit: m. Max contact distance.
   contact_threshold: 0.002
+  compute_self_geom_distance: True  # Set True to save nearest hand-hand geom distance diagnostics.

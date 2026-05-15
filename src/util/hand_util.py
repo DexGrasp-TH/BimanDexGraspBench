@@ -302,7 +302,10 @@ class MjHO:
 
         object_id = self.model.nbody - 1
         hand_id = self.model.nbody - 2
-        world_id = -1 if self.hand_mocap else 0
+        # Body id 0 is MuJoCo's world body. It must never be counted as a hand
+        # body, otherwise tabletop floor contacts can be mixed into hand-hand or
+        # hand-object metrics for mocap hands.
+        world_id = 0
 
         # Processing all contact information
         ho_contact = []
@@ -353,6 +356,173 @@ class MjHO:
             if "object_collision" in self.model.geom(i).name:
                 self.model.geom_margin[i] = self.model.geom_gap[i] = 0
         return ho_contact, hh_contact
+
+    def _body_pair_is_excluded(self, body1_id, body2_id):
+        """Check whether MuJoCo has an explicit contact exclude for two bodies.
+
+        Args:
+            body1_id: First MuJoCo body id.
+            body2_id: Second MuJoCo body id.
+
+        Returns:
+            True if the model contains a `<contact><exclude ...>` entry for the
+            unordered body pair; otherwise False.
+        """
+
+        low_id, high_id = sorted((int(body1_id), int(body2_id)))
+        signature = low_id + (high_id << 16)
+        return bool(np.any(self.model.exclude_signature == signature))
+
+    def _body_pair_is_ancestor_related(self, body1_id, body2_id):
+        """Check whether two bodies are on the same kinematic ancestor chain.
+
+        Args:
+            body1_id: First MuJoCo body id.
+            body2_id: Second MuJoCo body id.
+
+        Returns:
+            True if either body is an ancestor of the other. These pairs are
+            skipped for the self-distance metric because neighboring links often
+            meet at joints and do not represent meaningful finger-finger clearance.
+        """
+
+        body1_id = int(body1_id)
+        body2_id = int(body2_id)
+        parent_id = body1_id
+        while parent_id > 0:
+            parent_id = int(self.model.body_parentid[parent_id])
+            if parent_id == body2_id:
+                return True
+
+        parent_id = body2_id
+        while parent_id > 0:
+            parent_id = int(self.model.body_parentid[parent_id])
+            if parent_id == body1_id:
+                return True
+        return False
+
+    def _geom_pair_can_collide(self, geom1_id, geom2_id):
+        """Check whether two geoms are valid self-distance candidates.
+
+        Args:
+            geom1_id: First MuJoCo geom id.
+            geom2_id: Second MuJoCo geom id.
+
+        Returns:
+            True when the pair is contact-enabled, not explicitly excluded, and
+            not on the same ancestor chain; otherwise False.
+        """
+
+        body1_id = int(self.model.geom_bodyid[geom1_id])
+        body2_id = int(self.model.geom_bodyid[geom2_id])
+        if body1_id == body2_id:
+            return False
+        geom1_can_hit_geom2 = (self.model.geom_contype[geom1_id] & self.model.geom_conaffinity[geom2_id]) != 0
+        geom2_can_hit_geom1 = (self.model.geom_contype[geom2_id] & self.model.geom_conaffinity[geom1_id]) != 0
+        if not geom1_can_hit_geom2 and not geom2_can_hit_geom1:
+            return False
+        if self._body_pair_is_excluded(body1_id, body2_id):
+            return False
+        if self._body_pair_is_ancestor_related(body1_id, body2_id):
+            return False
+        return True
+
+    def _get_hand_collision_geom_ids(self, valid_body_names=None):
+        """Collect contact-enabled hand geoms used by self-distance evaluation.
+
+        Args:
+            valid_body_names: Optional collection of body names without the
+                attached-hand prefix. When provided, only geoms whose body names
+                are in the collection are included.
+
+        Returns:
+            List of MuJoCo geom ids that belong to the hand model and can
+            participate in collision checks.
+        """
+
+        hand_id = self.model.nbody - 2
+        valid_body_set = set(valid_body_names) if valid_body_names is not None else None
+        geom_ids = []
+        for geom_id in range(self.model.ngeom):
+            body_id = int(self.model.geom_bodyid[geom_id])
+            if body_id <= 0 or body_id > hand_id:
+                continue
+            body_name = self.model.body(body_id).name.removeprefix(self.hand_prefix)
+            if valid_body_set is not None and body_name not in valid_body_set:
+                continue
+            if self.model.geom_contype[geom_id] == 0 and self.model.geom_conaffinity[geom_id] == 0:
+                continue
+            geom_ids.append(geom_id)
+        return geom_ids
+
+    def get_hand_hand_signed_distance(self, hand_qpos, obj_pose, valid_body_names=None, distmax=1.0):
+        """Compute nearest hand-hand geom distance at one hand/object pose.
+
+        Args:
+            hand_qpos: Hand qpos in MuJoCo joint order.
+            obj_pose: Object pose appended to the MuJoCo qpos.
+            valid_body_names: Optional collection of body names without the
+                attached-hand prefix. When provided, only these hand bodies are
+                considered.
+            distmax: Maximum distance searched by `mujoco.mj_geomDistance`.
+
+        Returns:
+            Dictionary with `self_signed_dist`, nearest geom/body names, and the
+            number of candidate pairs. The sign convention is penetration-positive
+            and clearance-negative. This result is always computed from
+            `mujoco.mj_geomDistance` and does not depend on MuJoCo contact records.
+        """
+
+        self.reset_pose_qpos(hand_qpos, obj_pose)
+
+        geom_ids = self._get_hand_collision_geom_ids(valid_body_names=valid_body_names)
+        nearest_distance = None
+        nearest_fromto = None
+        nearest_pair = None
+        candidate_pair_num = 0
+        fromto = np.zeros(6, dtype=np.float64)
+        for i, geom1_id in enumerate(geom_ids):
+            for geom2_id in geom_ids[i + 1 :]:
+                if not self._geom_pair_can_collide(geom1_id, geom2_id):
+                    continue
+                candidate_pair_num += 1
+                distance = float(mujoco.mj_geomDistance(self.model, self.data, geom1_id, geom2_id, distmax, fromto))
+                if nearest_distance is None or distance < nearest_distance:
+                    nearest_distance = distance
+                    nearest_fromto = fromto.copy()
+                    nearest_pair = (geom1_id, geom2_id)
+
+        if nearest_distance is None:
+            return {
+                "self_signed_dist": np.nan,
+                "self_signed_dist_source": "geom_distance",
+                "self_signed_dist_geom_ids": [-1, -1],
+                "self_signed_dist_geom_pair": ["", ""],
+                "self_signed_dist_body_pair": ["", ""],
+                "self_signed_dist_fromto": np.full(6, np.nan, dtype=np.float64),
+                "self_signed_dist_candidate_pair_num": 0,
+            }
+
+        geom1_id, geom2_id = nearest_pair
+        body1_id = int(self.model.geom_bodyid[geom1_id])
+        body2_id = int(self.model.geom_bodyid[geom2_id])
+        geom1_name = self.model.geom(geom1_id).name or f"geom_{geom1_id}"
+        geom2_name = self.model.geom(geom2_id).name or f"geom_{geom2_id}"
+        return {
+            "self_signed_dist": -nearest_distance,
+            "self_signed_dist_source": "geom_distance",
+            "self_signed_dist_geom_ids": [int(geom1_id), int(geom2_id)],
+            "self_signed_dist_geom_pair": [
+                geom1_name,
+                geom2_name,
+            ],
+            "self_signed_dist_body_pair": [
+                self.model.body(body1_id).name.removeprefix(self.hand_prefix),
+                self.model.body(body2_id).name.removeprefix(self.hand_prefix),
+            ],
+            "self_signed_dist_fromto": nearest_fromto,
+            "self_signed_dist_candidate_pair_num": candidate_pair_num,
+        }
 
     def get_joint_names(self):
         model = self.model

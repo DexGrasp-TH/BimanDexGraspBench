@@ -47,11 +47,11 @@ GRASP_TYPE_NAMES = [name for name, _, _ in GRASP_TYPES]
 
 ADDITIONAL_EVAL_HYDRA_ARGS = {
     "right_two": [
-        "task.obj_mass=0.04",
+        "task.obj_mass=0.1",
         "task.pose_adjustment.squeeze_extrapolate_ratio=0.5",
     ],
     "right_three": [
-        "task.obj_mass=0.06",
+        "task.obj_mass=0.1",
         "task.pose_adjustment.squeeze_extrapolate_ratio=1.0",
     ],
     "right_full": [
@@ -59,11 +59,11 @@ ADDITIONAL_EVAL_HYDRA_ARGS = {
         "task.pose_adjustment.squeeze_extrapolate_ratio=1.0",
     ],
     "both_three": [
-        "task.obj_mass=0.12",
+        "task.obj_mass=0.1",
         "task.pose_adjustment.squeeze_extrapolate_ratio=1.0",
     ],
     "both_full": [
-        "task.obj_mass=0.2",
+        "task.obj_mass=0.1",
         "task.pose_adjustment.squeeze_extrapolate_ratio=1.0",
     ],
 }
