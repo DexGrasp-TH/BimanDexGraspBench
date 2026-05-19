@@ -11,7 +11,7 @@ class tabletopArmEval(BaseEval):
     def _simulate_under_extforce_details(self, pre_obj_qpos):
         # 1. Set object gravity
         external_force_direction = np.array([0.0, 0, -1, 0, 0, 0])
-        self.mj_ho.set_ext_force_on_obj(10 * external_force_direction * self.configs.task.obj_mass)
+        self.mj_ho.set_ext_force_on_obj(10 * external_force_direction * self.obj_mass)
 
         # 2. Approaching (skip if approach_phase is False)
         if self.configs.task.simulation_metrics.approach_phase:

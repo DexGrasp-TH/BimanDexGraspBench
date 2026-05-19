@@ -42,9 +42,7 @@ class fcMocapEval(BaseEval):
             )
 
             # 4. Add external force on the object
-            self.mj_ho.set_ext_force_on_obj(
-                10 * external_force_direction[i] * self.configs.task.obj_mass
-            )
+            self.mj_ho.set_ext_force_on_obj(10 * external_force_direction[i] * self.obj_mass)
 
             # 5. Wait for 2 seconds
             for _ in range(10):

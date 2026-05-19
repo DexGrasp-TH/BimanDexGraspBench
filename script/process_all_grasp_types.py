@@ -47,24 +47,19 @@ GRASP_TYPE_NAMES = [name for name, _, _ in GRASP_TYPES]
 
 ADDITIONAL_EVAL_HYDRA_ARGS = {
     "right_two": [
-        "task.obj_mass=0.1",
-        "task.pose_adjustment.squeeze_extrapolate_ratio=0.5",
+        "task.pose_adjustment.squeeze_extrapolate_ratio=0.3",
     ],
     "right_three": [
-        "task.obj_mass=0.1",
-        "task.pose_adjustment.squeeze_extrapolate_ratio=1.0",
+        "task.pose_adjustment.squeeze_extrapolate_ratio=0.6",
     ],
     "right_full": [
-        "task.obj_mass=0.1",
         "task.pose_adjustment.squeeze_extrapolate_ratio=1.0",
     ],
     "both_three": [
-        "task.obj_mass=0.1",
-        "task.pose_adjustment.squeeze_extrapolate_ratio=1.0",
+        "task.pose_adjustment.squeeze_extrapolate_ratio=2.0",
     ],
     "both_full": [
-        "task.obj_mass=0.1",
-        "task.pose_adjustment.squeeze_extrapolate_ratio=1.0",
+        "task.pose_adjustment.squeeze_extrapolate_ratio=2.0",
     ],
 }
 
@@ -132,6 +127,28 @@ def parse_stage_list(stages: list[str] | None) -> list[str]:
     return [stage for stage in DEFAULT_STAGES if stage in selected]
 
 
+def parse_run_name_list(run_name_args: list[str]) -> list[str]:
+    """Normalize one or more --run-name values into an ordered unique list.
+
+    Args:
+        run_name_args: Raw command line values collected from --run-name.
+
+    Returns:
+        Ordered run names with comma-separated items expanded and duplicates removed.
+    """
+
+    normalized_run_names = []
+    seen_run_names = set()
+    for raw_value in run_name_args:
+        for run_name in raw_value.split(","):
+            normalized_name = run_name.strip()
+            if not normalized_name or normalized_name in seen_run_names:
+                continue
+            seen_run_names.add(normalized_name)
+            normalized_run_names.append(normalized_name)
+    return normalized_run_names
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the command line parser.
 
@@ -144,7 +161,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--hand", choices=sorted(HAND_CONFIGS), required=True)
-    parser.add_argument("--run-name", "--run_name", dest="run_name", required=True)
+    parser.add_argument(
+        "--run-name",
+        "--run_name",
+        dest="run_names",
+        nargs="+",
+        required=True,
+        help="One or more run names. Multiple values can be passed as space-separated or comma-separated items.",
+    )
     parser.add_argument("--bodex-path", "--bodex_path", dest="bodex_path", default=DEFAULT_BODEX_PATH)
     parser.add_argument("--max-num", "--max_num", dest="max_num", type=int, default=-1)
     parser.add_argument(
@@ -154,6 +178,22 @@ def build_parser() -> argparse.ArgumentParser:
         choices=GRASP_TYPE_NAMES,
         action="append",
         help="Run only one grasp type. Repeat to select multiple. Default: all five grasp types.",
+    )
+    both_three_group = parser.add_mutually_exclusive_group()
+    both_three_group.add_argument(
+        "--include-both-three",
+        "--include_both_three",
+        dest="include_both_three",
+        action="store_true",
+        default=True,
+        help="Include both_three in processing. This is the default.",
+    )
+    both_three_group.add_argument(
+        "--exclude-both-three",
+        "--exclude_both_three",
+        dest="include_both_three",
+        action="store_false",
+        help="Exclude both_three before building format/eval/collect jobs.",
     )
     parser.add_argument(
         "--stage",
@@ -169,21 +209,37 @@ def build_jobs(args: argparse.Namespace) -> list[GraspJob]:
     """Create the five grasp processing jobs for the selected hand family.
 
     Args:
-        args: Parsed command line arguments.
+        args: Parsed command line arguments, including grasp-type filters.
 
     Returns:
         Ordered list of grasp jobs.
     """
 
+    return build_jobs_for_run_name(args, args.run_name)
+
+
+def build_jobs_for_run_name(args: argparse.Namespace, run_name: str) -> list[GraspJob]:
+    """Create the grasp processing jobs for one selected run name.
+
+    Args:
+        args: Parsed command line arguments, including grasp-type filters.
+        run_name: Run name whose exported graspdata should be processed.
+
+    Returns:
+        Ordered list of grasp jobs for the provided run name.
+    """
+
     hand_config = HAND_CONFIGS[args.hand]
     jobs = []
     selected_grasp_types = set(args.grasp_types or GRASP_TYPE_NAMES)
+    if not args.include_both_three:
+        selected_grasp_types.discard("both_three")
     for suffix, hand_kind, tabletop_split in GRASP_TYPES:
         if suffix not in selected_grasp_types:
             continue
         hand = hand_config[f"{hand_kind}_hand"]
         dataset = hand_config[f"{hand_kind}_dataset"]
-        exp_name = f"{args.run_name}_{suffix}"
+        exp_name = f"{run_name}_{suffix}"
         jobs.append(
             GraspJob(
                 suffix=suffix,
@@ -191,7 +247,7 @@ def build_jobs(args: argparse.Namespace) -> list[GraspJob]:
                 hand=hand,
                 dataset=dataset,
                 tabletop_split=tabletop_split,
-                data_path=Path(args.bodex_path) / dataset / tabletop_split / args.run_name / "graspdata",
+                data_path=Path(args.bodex_path) / dataset / tabletop_split / run_name / "graspdata",
                 output_path=Path("output") / f"{exp_name}_{hand}",
                 additional_eval_hydra_args=ADDITIONAL_EVAL_HYDRA_ARGS[suffix],
             )
@@ -362,6 +418,36 @@ def process_job(job: GraspJob, index: int, total: int, stages: list[str], max_nu
         run_command(collect_command(job), dry_run)
 
 
+def process_run_name(args: argparse.Namespace, run_name: str, run_index: int, run_total: int, stages: list[str]) -> None:
+    """Run the selected stages for one run name across all chosen grasp types.
+
+    Args:
+        args: Parsed command line arguments.
+        run_name: Run name to process.
+        run_index: One-based run index for progress output.
+        run_total: Total number of run names in this invocation.
+        stages: Pipeline stages selected for this run.
+
+    Returns:
+        None. Raises SystemExit or CalledProcessError on failure.
+    """
+
+    jobs = build_jobs_for_run_name(args, run_name)
+    if not jobs:
+        raise SystemExit("no grasp jobs selected")
+
+    cleanup_existing_outputs(jobs, stages, args.dry_run)
+    print(f"Processing all grasp types for hand: {args.hand}, run: {run_name} ({run_index}/{run_total})")
+    print(f"Selected grasp types: {', '.join(job.suffix for job in jobs)}")
+    print(f"Selected stages: {', '.join(stages)}")
+    print(f"BimanBODex path: {args.bodex_path}")
+    print(f"max_num: {args.max_num}")
+    print("================================================")
+
+    for job_index, job in enumerate(jobs, start=1):
+        process_job(job, job_index, len(jobs), stages, args.max_num, args.dry_run)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the all-grasp-type processing pipeline.
 
@@ -374,28 +460,23 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = build_parser()
     args = parser.parse_args(argv)
+    args.run_name_list = parse_run_name_list(args.run_names)
+    if not args.run_name_list:
+        parser.error("no run names selected")
     stages = parse_stage_list(args.stage)
-    jobs = build_jobs(args)
-
-    if not jobs:
-        parser.error("no grasp jobs selected")
-    cleanup_existing_outputs(jobs, stages, args.dry_run)
-    print(f"Processing all grasp types for hand: {args.hand}, run: {args.run_name}")
-    print(f"Selected grasp types: {', '.join(job.suffix for job in jobs)}")
-    print(f"Selected stages: {', '.join(stages)}")
-    print(f"BimanBODex path: {args.bodex_path}")
-    print(f"max_num: {args.max_num}")
-    print("================================================")
 
     try:
-        for index, job in enumerate(jobs, start=1):
-            process_job(job, index, len(jobs), stages, args.max_num, args.dry_run)
+        for run_index, run_name in enumerate(args.run_name_list, start=1):
+            args.run_name = run_name
+            process_run_name(args, run_name, run_index, len(args.run_name_list), stages)
     except subprocess.CalledProcessError as exc:
         print(f"\nCommand failed with exit code {exc.returncode}: {shell_text(exc.cmd)}", file=sys.stderr)
         return exc.returncode
+    except SystemExit as exc:
+        parser.error(str(exc))
 
     print("\n================================================")
-    print("All grasp types processed successfully!")
+    print("All selected run names and grasp types processed successfully!")
     return 0
 
 
