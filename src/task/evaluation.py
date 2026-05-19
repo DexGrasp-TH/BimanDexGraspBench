@@ -30,6 +30,28 @@ def normalize_eval_index_range(input_items, start_index, end_index):
     return input_items[normalized_start:normalized_end], normalized_start, normalized_end
 
 
+def filter_input_paths_by_obj_scale(input_path_lst, target_obj_scale):
+    """Keep only grasp files whose saved object scale matches the requested value."""
+
+    if target_obj_scale is None:
+        return input_path_lst, 0
+
+    target_obj_scale = float(target_obj_scale)
+    filtered_input_path_lst = []
+    failed_num = 0
+    for input_path in input_path_lst:
+        try:
+            grasp_data = np.load(input_path, allow_pickle=True).item()
+            obj_scale = float(grasp_data["obj_scale"])
+        except Exception as exc:
+            failed_num += 1
+            logging.warning(f"Failed to read obj_scale from {input_path}: {exc}")
+            continue
+        if np.isclose(obj_scale, target_obj_scale):
+            filtered_input_path_lst.append(input_path)
+    return filtered_input_path_lst, failed_num
+
+
 def safe_eval_one(params):
     input_npy_path, configs = params[0], params[1]
     eval_runner = None
@@ -104,6 +126,9 @@ def task_eval(configs):
         input_path_lst = list(set(input_path_lst).difference(set(eval_path_lst)))
     skip_num = init_num - len(input_path_lst)
     input_path_lst = sorted(input_path_lst)
+    scale_filter = getattr(configs.task, "obj_scale", None)
+    scale_filter_input_num = len(input_path_lst)
+    input_path_lst, scale_filter_failed_num = filter_input_paths_by_obj_scale(input_path_lst, scale_filter)
     start_index = int(getattr(configs.task, "start", 0))
     end_index = int(getattr(configs.task, "end", -1))
     if configs.task.max_num > 0:
@@ -119,6 +144,8 @@ def task_eval(configs):
 
     logging.info(
         f"Find {init_num} grasp data in {configs.grasp_dir}, skip {skip_num} already evaluated, "
+        f"filter obj_scale={scale_filter} from {scale_filter_input_num} to {len(input_path_lst)} "
+        f"({scale_filter_failed_num} read failures), "
         f"apply max_num to get {sampled_input_num}, select index range "
         f"[{normalized_start}, {normalized_end}), and use {len(input_path_lst)}."
     )

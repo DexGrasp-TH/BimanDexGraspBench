@@ -1,4 +1,5 @@
 max_num: -1
+obj_scale: null  # Optional exact object-scale filter for temporary/debug eval runs, e.g. task.obj_scale=0.03.
 start: 0  # Inclusive index after optional max_num random sampling.
 end: -1  # Exclusive index after optional max_num random sampling; set <0 to keep all remaining grasps.
 obj_mass: 0.1   # unit: kg 
