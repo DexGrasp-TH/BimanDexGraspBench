@@ -22,6 +22,7 @@ class MjHO:
         obj_path,
         obj_scale,
         obj_density,
+        mj_arena_memory_bytes,
         hand_xml_path,
         hand_mocap,
         exclude_table_contact,
@@ -32,6 +33,7 @@ class MjHO:
     ):
         self.hand_mocap = hand_mocap
         self.spec = mujoco.MjSpec()
+        self.spec.memory = self._normalize_mj_arena_memory_bytes(mj_arena_memory_bytes)
         self.spec.meshdir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
         self.spec.option.timestep = 0.004
         self.spec.option.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
@@ -71,6 +73,26 @@ class MjHO:
 
         self.ext_force_on_obj = None
         self.target_qpos_a = np.zeros((self.model.nu))
+
+    def _normalize_mj_arena_memory_bytes(self, mj_arena_memory_bytes):
+        """Normalize the configured MuJoCo arena memory size.
+
+        Args:
+            mj_arena_memory_bytes: Arena capacity from config in bytes. `None`
+                means MuJoCo should use its default compiled size.
+
+        Returns:
+            Positive integer byte count that can be assigned to `MjSpec.memory`.
+        """
+
+        if mj_arena_memory_bytes is None:
+            return self.spec.memory
+        normalized_bytes = int(mj_arena_memory_bytes)
+        if normalized_bytes <= 0:
+            raise ValueError(
+                f"mj_arena_memory_bytes must be a positive integer number of bytes, got {mj_arena_memory_bytes}."
+            )
+        return normalized_bytes
 
     def _init_after_first_fk(self):
         # For ctrl

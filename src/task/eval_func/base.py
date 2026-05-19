@@ -31,17 +31,20 @@ class BaseEval:
                 print(f"Skip non-finite qpos fields: {self.nonfinite_qpos_fields}")
             return
 
-        # Fix object mass by setting density
+        # Resolve object density first, then compute the real mass implied by this scale and object volume.
         obj_info = load_json(os.path.join(self.grasp_data["obj_path"], "info/simplified.json"))
         obj_coef = obj_info["mass"] / (obj_info["density"] * (obj_info["scale"] ** 3))
-        new_obj_density = configs.task.obj_mass / (obj_coef * (self.grasp_data["obj_scale"] ** 3))
+        self.obj_physics_info = self._resolve_obj_density_and_mass(obj_coef, self.grasp_data["obj_scale"])
+        self.obj_density = self.obj_physics_info["obj_density"]
+        self.obj_mass = self.obj_physics_info["obj_mass"]
 
         # Build mj_spec
         self.mj_ho = MjHO(
             obj_path=self.grasp_data["obj_path"],
             obj_scale=self.grasp_data["obj_scale"],
             has_floor_z0=configs.setting == "tabletop",
-            obj_density=new_obj_density,
+            obj_density=self.obj_density,
+            mj_arena_memory_bytes=getattr(configs.task, "mj_arena_memory_bytes", None),
             hand_xml_path=configs.hand.xml_path,
             hand_mocap=configs.hand.mocap,
             exclude_table_contact=configs.hand.exclude_table_contact,
@@ -87,6 +90,146 @@ class BaseEval:
                 f.write(self.mj_ho.spec.to_xml())
 
         return
+
+    def _resolve_obj_density_and_mass(self, obj_coef, obj_scale):
+        """Resolve the object density and the resulting mass for one evaluated grasp.
+
+        Args:
+            obj_coef: Object-specific volume coefficient from the source object info,
+                equivalent to `mass / (density * scale ** 3)`.
+            obj_scale: Uniform object scale stored in the grasp data.
+
+        Returns:
+            A dictionary containing the selected density, resulting object mass,
+            object coefficient, and density policy diagnostics.
+        """
+
+        task_config = self.configs.task
+        obj_coef = float(obj_coef)
+        obj_scale = float(obj_scale)
+        if obj_coef <= 0:
+            raise ValueError(f"obj_coef must be positive, got {obj_coef}.")
+        if obj_scale <= 0:
+            raise ValueError(f"obj_scale must be positive, got {obj_scale}.")
+
+        policy_config = getattr(task_config, "obj_density_policy", None)
+        mass_max = getattr(task_config, "obj_mass_max", None)
+        mass_max = None if mass_max is None else float(mass_max)
+        if mass_max is not None and mass_max <= 0:
+            raise ValueError(f"task.obj_mass_max must be positive when set, got {mass_max}.")
+
+        policy = None if policy_config is None else str(policy_config)
+        if policy in {None, "", "none", "None", "null", "Null"}:
+            # Backward-compatible behavior: legacy configs target one mass and derive density from volume.
+            legacy_mass = float(getattr(task_config, "obj_mass", 0.1))
+            if legacy_mass <= 0:
+                raise ValueError(f"task.obj_mass must be positive, got {legacy_mass}.")
+            obj_mass_unclipped = legacy_mass
+            obj_mass = self._clip_obj_mass(obj_mass_unclipped, mass_max)
+            obj_density_unclamped = obj_mass_unclipped / (obj_coef * (obj_scale**3))
+            obj_density = obj_mass / (obj_coef * (obj_scale**3))
+            return {
+                "obj_density_policy": "legacy_mass",
+                "obj_density": float(obj_density),
+                "obj_density_unclamped": float(obj_density_unclamped),
+                "obj_density_ref": np.nan,
+                "obj_density_ref_scale": np.nan,
+                "obj_density_scale_alpha": np.nan,
+                "obj_density_min": np.nan,
+                "obj_density_max": np.nan,
+                "obj_mass": float(obj_mass),
+                "obj_mass_unclipped": float(obj_mass_unclipped),
+                "obj_mass_max": np.nan if mass_max is None else mass_max,
+                "obj_mass_clipped": bool(obj_mass < obj_mass_unclipped),
+                "obj_coef": obj_coef,
+            }
+
+        density_ref = float(getattr(task_config, "obj_density_ref", 700.0))
+        ref_scale = float(getattr(task_config, "obj_density_ref_scale", 0.06))
+        alpha = float(getattr(task_config, "obj_density_scale_alpha", 0.0))
+        density_min = getattr(task_config, "obj_density_min", None)
+        density_max = getattr(task_config, "obj_density_max", None)
+        density_min = None if density_min is None else float(density_min)
+        density_max = None if density_max is None else float(density_max)
+
+        if density_ref <= 0:
+            raise ValueError(f"task.obj_density_ref must be positive, got {density_ref}.")
+        if ref_scale <= 0:
+            raise ValueError(f"task.obj_density_ref_scale must be positive, got {ref_scale}.")
+        if density_min is not None and density_min <= 0:
+            raise ValueError(f"task.obj_density_min must be positive when set, got {density_min}.")
+        if density_max is not None and density_max <= 0:
+            raise ValueError(f"task.obj_density_max must be positive when set, got {density_max}.")
+        if density_min is not None and density_max is not None and density_min > density_max:
+            raise ValueError(
+                f"task.obj_density_min ({density_min}) cannot exceed task.obj_density_max ({density_max})."
+            )
+
+        if policy == "fixed":
+            obj_density_unclamped = density_ref
+        elif policy == "scale_power":
+            # The density is shared by all objects with the same scale; mass still differs by object volume.
+            obj_density_unclamped = density_ref * ((obj_scale / ref_scale) ** alpha)
+        else:
+            raise ValueError(f"Unsupported task.obj_density_policy: {policy}. Expected 'fixed' or 'scale_power'.")
+
+        obj_density = obj_density_unclamped
+        if density_min is not None:
+            obj_density = max(obj_density, density_min)
+        if density_max is not None:
+            obj_density = min(obj_density, density_max)
+
+        obj_mass_unclipped = obj_coef * obj_density * (obj_scale**3)
+        obj_mass = self._clip_obj_mass(obj_mass_unclipped, mass_max)
+        if obj_mass < obj_mass_unclipped:
+            # Keep MuJoCo density and simulation external force consistent after mass clipping.
+            obj_density = obj_mass / (obj_coef * (obj_scale**3))
+
+        return {
+            "obj_density_policy": policy,
+            "obj_density": float(obj_density),
+            "obj_density_unclamped": float(obj_density_unclamped),
+            "obj_density_ref": density_ref,
+            "obj_density_ref_scale": ref_scale,
+            "obj_density_scale_alpha": alpha,
+            "obj_density_min": np.nan if density_min is None else density_min,
+            "obj_density_max": np.nan if density_max is None else density_max,
+            "obj_mass": float(obj_mass),
+            "obj_mass_unclipped": float(obj_mass_unclipped),
+            "obj_mass_max": np.nan if mass_max is None else mass_max,
+            "obj_mass_clipped": bool(obj_mass < obj_mass_unclipped),
+            "obj_coef": obj_coef,
+        }
+
+    def _clip_obj_mass(self, obj_mass, mass_max):
+        """Clip object mass to an optional upper bound.
+
+        Args:
+            obj_mass: Object mass computed from the selected density policy.
+            mass_max: Optional maximum allowed object mass in kilograms.
+
+        Returns:
+            The clipped object mass when `mass_max` is set, otherwise the input mass.
+        """
+
+        obj_mass = float(obj_mass)
+        if obj_mass <= 0:
+            raise ValueError(f"Resolved object mass must be positive, got {obj_mass}.")
+        if mass_max is None:
+            return obj_mass
+        return min(obj_mass, mass_max)
+
+    def _copy_object_physics_to_eval_results(self, eval_results):
+        """Copy resolved object physics diagnostics into saved evaluation results.
+
+        Args:
+            eval_results: Evaluation result dictionary copied from the original input data.
+
+        Returns:
+            None. The dictionary is updated in-place with density and mass diagnostics.
+        """
+
+        eval_results.update(self.obj_physics_info)
 
     def _find_nonfinite_qpos_fields(self, grasp_data):
         """Find qpos fields that contain NaN or Inf values before MuJoCo evaluation.
@@ -610,6 +753,8 @@ class BaseEval:
             eval_results["grasp_type"] = self._determine_grasp_type()
             self._save_eval_results(eval_results)
             return
+
+        self._copy_object_physics_to_eval_results(eval_results)
 
         if self.configs.task.pene_contact_metrics is not None:
             (

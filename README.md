@@ -114,12 +114,13 @@ $ python script/process_all_grasp_types.py --hand shadow --run_name minitest --s
 $ python script/process_all_grasp_types.py --hand shadow --run_name minitest --stage eval --stage collect
 ```
 
-Before processing, the script asks whether to delete existing outputs for the selected jobs. The deletion scope depends on
-the selected stage: `format` deletes the whole job output folder, `eval` deletes `evaluation/`, `succgrasp/`, `debug/`,
-and `succ_collect/`, and `collect` deletes only `succ_collect/`.
+Before processing, the script asks once whether to delete existing outputs for all selected run names and jobs. The
+deletion scope depends on the selected stage: `format` deletes the whole job output folder, `eval` deletes
+`evaluation/`, `succgrasp/`, `debug/`, and `succ_collect/`, and `collect` deletes only `succ_collect/`.
 
-Eval-only per-grasp-type Hydra overrides are defined near the top of `script/process_all_grasp_types.py` in
-`ADDITIONAL_EVAL_HYDRA_ARGS`.
+Eval-only Hydra overrides are defined near the top of `script/process_all_grasp_types.py` in
+`ADDITIONAL_EVAL_HYDRA_ARGS`. The `default` table is used for every hand unless a hand-specific table, such as
+`shadow`, `leap`, or `leap_sp`, overrides a grasp type.
 
 **Concatenate Dataset**: combine successful grasps from all grasp types into a unified dataset saved in `${AnyScaleGraspDataset}/<DATASET_NAME>` for NN training:
 
@@ -146,4 +147,3 @@ python src/main.py task=eval hand=<HAND> exp_name=<EXP_NAME>_<GRASP_TYPE> task.m
 
 # E.g., python src/main.py task=eval hand=dual_dummy_arm_leap exp_name=learn_both_full task.max_num=-1 task.debug_viewer=False 
 ```
-
