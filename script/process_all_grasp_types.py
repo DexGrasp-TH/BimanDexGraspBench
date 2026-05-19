@@ -45,7 +45,7 @@ GRASP_TYPES = [
 
 GRASP_TYPE_NAMES = [name for name, _, _ in GRASP_TYPES]
 
-ADDITIONAL_EVAL_HYDRA_ARGS = {
+DEFAULT_ADDITIONAL_EVAL_HYDRA_ARGS = {
     "right_two": [
         "task.pose_adjustment.squeeze_extrapolate_ratio=0.3",
     ],
@@ -61,6 +61,19 @@ ADDITIONAL_EVAL_HYDRA_ARGS = {
     "both_full": [
         "task.pose_adjustment.squeeze_extrapolate_ratio=2.0",
     ],
+}
+
+ADDITIONAL_EVAL_HYDRA_ARGS = {
+    "default": DEFAULT_ADDITIONAL_EVAL_HYDRA_ARGS,
+    # Add per-hand overrides here. Missing grasp types fall back to "default".
+    "leap_sp": {
+        "right_two": [
+            "task.pose_adjustment.squeeze_extrapolate_ratio=0.6",
+        ],
+        "right_three": [
+            "task.pose_adjustment.squeeze_extrapolate_ratio=0.8",
+        ],
+    },
 }
 
 
@@ -147,6 +160,28 @@ def parse_run_name_list(run_name_args: list[str]) -> list[str]:
             seen_run_names.add(normalized_name)
             normalized_run_names.append(normalized_name)
     return normalized_run_names
+
+
+def resolve_additional_eval_hydra_args(hand_name: str, grasp_type: str) -> list[str]:
+    """Resolve default eval-only Hydra overrides for one hand and grasp type.
+
+    Args:
+        hand_name: Hand family selected by --hand, such as shadow, leap, or leap_sp.
+        grasp_type: Grasp type suffix, such as right_full or both_full.
+
+    Returns:
+        A copy of Hydra override tokens. Hand-specific entries override the default table.
+    """
+
+    hand_overrides = ADDITIONAL_EVAL_HYDRA_ARGS.get(hand_name, {})
+    if grasp_type in hand_overrides:
+        return list(hand_overrides[grasp_type])
+
+    default_overrides = ADDITIONAL_EVAL_HYDRA_ARGS.get("default", {})
+    if grasp_type in default_overrides:
+        return list(default_overrides[grasp_type])
+
+    raise KeyError(f"missing eval Hydra args for hand={hand_name!r}, grasp_type={grasp_type!r}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -249,10 +284,30 @@ def build_jobs_for_run_name(args: argparse.Namespace, run_name: str) -> list[Gra
                 tabletop_split=tabletop_split,
                 data_path=Path(args.bodex_path) / dataset / tabletop_split / run_name / "graspdata",
                 output_path=Path("output") / f"{exp_name}_{hand}",
-                additional_eval_hydra_args=ADDITIONAL_EVAL_HYDRA_ARGS[suffix],
+                additional_eval_hydra_args=resolve_additional_eval_hydra_args(args.hand, suffix),
             )
         )
     return jobs
+
+
+def build_jobs_for_run_names(args: argparse.Namespace, run_names: list[str]) -> list[tuple[str, list[GraspJob]]]:
+    """Create grasp jobs for every selected run name before processing starts.
+
+    Args:
+        args: Parsed command line arguments, including hand and grasp-type filters.
+        run_names: Ordered run names normalized from the command line.
+
+    Returns:
+        Ordered pairs of run name and its grasp jobs.
+    """
+
+    jobs_by_run_name = []
+    for run_name in run_names:
+        jobs = build_jobs_for_run_name(args, run_name)
+        if not jobs:
+            raise SystemExit("no grasp jobs selected")
+        jobs_by_run_name.append((run_name, jobs))
+    return jobs_by_run_name
 
 
 def should_delete(paths: list[Path]) -> bool:
@@ -418,12 +473,20 @@ def process_job(job: GraspJob, index: int, total: int, stages: list[str], max_nu
         run_command(collect_command(job), dry_run)
 
 
-def process_run_name(args: argparse.Namespace, run_name: str, run_index: int, run_total: int, stages: list[str]) -> None:
+def process_run_name(
+    args: argparse.Namespace,
+    run_name: str,
+    jobs: list[GraspJob],
+    run_index: int,
+    run_total: int,
+    stages: list[str],
+) -> None:
     """Run the selected stages for one run name across all chosen grasp types.
 
     Args:
         args: Parsed command line arguments.
         run_name: Run name to process.
+        jobs: Grasp jobs already built for this run name.
         run_index: One-based run index for progress output.
         run_total: Total number of run names in this invocation.
         stages: Pipeline stages selected for this run.
@@ -432,11 +495,6 @@ def process_run_name(args: argparse.Namespace, run_name: str, run_index: int, ru
         None. Raises SystemExit or CalledProcessError on failure.
     """
 
-    jobs = build_jobs_for_run_name(args, run_name)
-    if not jobs:
-        raise SystemExit("no grasp jobs selected")
-
-    cleanup_existing_outputs(jobs, stages, args.dry_run)
     print(f"Processing all grasp types for hand: {args.hand}, run: {run_name} ({run_index}/{run_total})")
     print(f"Selected grasp types: {', '.join(job.suffix for job in jobs)}")
     print(f"Selected stages: {', '.join(stages)}")
@@ -466,9 +524,12 @@ def main(argv: list[str] | None = None) -> int:
     stages = parse_stage_list(args.stage)
 
     try:
-        for run_index, run_name in enumerate(args.run_name_list, start=1):
+        jobs_by_run_name = build_jobs_for_run_names(args, args.run_name_list)
+        all_jobs = [job for _, jobs in jobs_by_run_name for job in jobs]
+        cleanup_existing_outputs(all_jobs, stages, args.dry_run)
+        for run_index, (run_name, jobs) in enumerate(jobs_by_run_name, start=1):
             args.run_name = run_name
-            process_run_name(args, run_name, run_index, len(args.run_name_list), stages)
+            process_run_name(args, run_name, jobs, run_index, len(jobs_by_run_name), stages)
     except subprocess.CalledProcessError as exc:
         print(f"\nCommand failed with exit code {exc.returncode}: {shell_text(exc.cmd)}", file=sys.stderr)
         return exc.returncode
