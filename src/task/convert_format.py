@@ -50,6 +50,7 @@ LEARNING_IK_CACHE = {}
 LEARNING_METADATA_CACHE = {}
 LEARNING_STAGE_NAMES = ("pregrasp", "grasp", "squeeze")
 LEARNING_OPTIONAL_KEYS = ("grasp_error", "grasp_type_id", "pred_grasp_type_prob")
+LEARNING_HAND_FAMILY_SUFFIXES = ("leap_sp", "shadow", "leap")
 
 
 def _resolve_scene_path(scene_path):
@@ -90,36 +91,86 @@ def _get_target_grasp_type_from_exp_name(exp_name):
     return None
 
 
-def _load_learning_metadata(scene_path, source_family):
+def _get_learning_source_family(hand_name):
+    """Resolve the source hand family used by Learning metadata.
+
+    Args:
+        hand_name: Benchmark hand config name, such as `leap_sp` or
+            `dual_dummy_arm_leap_sp`.
+
+    Returns:
+        Source family folder name used by dataset metadata.
+    """
+    for suffix in LEARNING_HAND_FAMILY_SUFFIXES:
+        if hand_name == suffix or hand_name.endswith(f"_{suffix}"):
+            return suffix
+    return hand_name.split("_")[-1]
+
+
+def _get_learning_metadata_group(configs):
+    """Resolve the metadata group used to split Learning source qpos.
+
+    Args:
+        configs: Runtime config object.
+
+    Returns:
+        Metadata group name. Defaults to `both_full` because Learning samples store
+        both wrist poses and both hands even when evaluating single-hand grasp types.
+    """
+    return str(getattr(configs.task, "learning_metadata_group", "both_full"))
+
+
+def _metadata_candidate_paths(dataset_root, source_family, metadata_group):
+    """Build ordered metadata path candidates for Learning conversion.
+
+    Args:
+        dataset_root: AnyScaleGrasp dataset root inferred from scene paths.
+        source_family: Source hand family, e.g. `leap_sp`.
+        metadata_group: Grasp type group, e.g. `right_two` or `both_full`.
+
+    Returns:
+        Ordered list of candidate metadata paths.
+    """
+    if dataset_root is None:
+        return []
+
+    candidate_groups = [metadata_group, "both_full"] if metadata_group != "both_full" else ["both_full"]
+    candidate_paths = []
+    for group in candidate_groups:
+        candidate_paths.append(os.path.join(dataset_root, "human_DGN2k_full", source_family, group, "metadata.json"))
+    for group in candidate_groups:
+        candidate_paths.extend(
+            sorted(glob(os.path.join(dataset_root, "BimanBODex*", source_family, group, "metadata.json")))
+        )
+    return candidate_paths
+
+
+def _load_learning_metadata(scene_path, source_family, metadata_group="both_full"):
     """Load and cache learning metadata for a source hand family.
 
     Args:
         scene_path: Resolved scene path used to infer dataset root.
         source_family: Source hand family, e.g. `leap` or `shadow`.
+        metadata_group: Grasp type group whose metadata should be preferred.
 
     Returns:
         Metadata dict with joint names and grouped joint-name lists.
     """
     marker = f"{os.sep}object{os.sep}"
     dataset_root = scene_path.split(marker, 1)[0] if marker in scene_path else None
-    cache_key = (dataset_root, source_family)
+    cache_key = (dataset_root, source_family, metadata_group)
     if cache_key in LEARNING_METADATA_CACHE:
         return LEARNING_METADATA_CACHE[cache_key]
 
     candidate_paths = []
-    if dataset_root is not None:
-        candidate_paths.extend(
-            sorted(glob(os.path.join(dataset_root, "BimanBODex*", source_family, "both_full", "metadata.json")))
-        )
+    candidate_paths.extend(_metadata_candidate_paths(dataset_root, source_family, metadata_group))
     env_dataset_root = os.environ.get("AnyScaleGraspDataset")
     if env_dataset_root:
-        candidate_paths.extend(
-            sorted(glob(os.path.join(env_dataset_root, "BimanBODex*", source_family, "both_full", "metadata.json")))
-        )
+        candidate_paths.extend(_metadata_candidate_paths(env_dataset_root, source_family, metadata_group))
     metadata_path = next((path for path in dict.fromkeys(candidate_paths) if os.path.exists(path)), None)
     if metadata_path is None:
         raise FileNotFoundError(
-            f"Cannot find metadata.json for source_family={source_family}. "
+            f"Cannot find metadata.json for source_family={source_family}, metadata_group={metadata_group}. "
             f"Checked roots from scene_path={scene_path} and AnyScaleGraspDataset={env_dataset_root}."
         )
     with open(metadata_path, "r") as f:
@@ -330,7 +381,15 @@ def _solve_dummy_arm_qpos(solver, side, target_pose):
     return full_q[arm_indices].detach().cpu().numpy().astype(np.float32)
 
 
-def _solve_learning_batch_ik_with_retry(solver, ee_name, matrix, ref_configs, side_name, max_retry_rounds=3):
+def _solve_learning_batch_ik_with_retry(
+    solver,
+    ee_name,
+    matrix,
+    ref_configs,
+    side_name,
+    max_retry_rounds=3,
+    allow_failure=False,
+):
     """Solve batch IK and retry failed items with new random seeds.
 
     Args:
@@ -340,9 +399,12 @@ def _solve_learning_batch_ik_with_retry(solver, ee_name, matrix, ref_configs, si
         ref_configs: Reference full joint configs for first-pass initialization.
         side_name: Side label used in error messages (`right`/`left`).
         max_retry_rounds: Number of retry rounds for failed items.
+        allow_failure: If True, return success flags instead of raising when
+            some items remain unsolved.
 
     Returns:
-        Dict with `q` and `success` where all items are solved, or raises.
+        Dict with `q`, `success`, and `failed_indices`. Raises on failure unless
+        `allow_failure` is True.
     """
     robot_helper = solver["robot_helper"]
     result = robot_helper.solve_ik_batch(ee_name, matrix, ref_configs=ref_configs.clone(), use_ref_as_init=True)
@@ -370,9 +432,32 @@ def _solve_learning_batch_ik_with_retry(solver, ee_name, matrix, ref_configs, si
 
     if bool((~success).any().item()):
         fail_idx = int(torch.nonzero(~success, as_tuple=False)[0].item())
-        raise RuntimeError(f"PK IK failed in batched Learning conversion ({side_name}), item={fail_idx}")
+        if not allow_failure:
+            raise RuntimeError(f"PK IK failed in batched Learning conversion ({side_name}), item={fail_idx}")
 
-    return {"q": q, "success": success}
+    failed_indices = torch.nonzero(~success, as_tuple=False).squeeze(1).detach().cpu().numpy().astype(np.int64)
+    return {"q": q, "success": success, "failed_indices": failed_indices}
+
+
+def _mark_learning_ik_failed_record(record, metadata, failures):
+    """Mark one Learning record as an IK-conversion failure.
+
+    Args:
+        record: Batched Learning conversion record with `new_data` and stages.
+        metadata: Learning metadata dict with target joint order.
+        failures: List of failure dictionaries containing side, stage, and target pose.
+
+    Returns:
+        None. The record's output data is updated in-place with NaN qpos fields.
+    """
+    nan_qpos = np.full((len(metadata["joint_names"]),), np.nan, dtype=np.float32)
+    record["new_data"]["format_ik_failed"] = True
+    record["new_data"]["format_ik_failed_reason"] = "dummy_arm_ik_failed"
+    record["new_data"]["format_ik_failed_side"] = sorted({failure["side"] for failure in failures})
+    record["new_data"]["format_ik_failed_stage"] = sorted({failure["stage"] for failure in failures})
+    record["new_data"]["format_ik_failed_targets"] = failures
+    for stage in LEARNING_STAGE_NAMES:
+        record["new_data"][f"{stage}_qpos"] = nan_qpos.copy()
 
 
 def _convert_learning_stage_single(stage_qpos, metadata):
@@ -624,7 +709,6 @@ def Learning(params):
         return
 
     hand_name = str(configs.hand_name)
-    source_family = hand_name.split("_")[-1]
     is_dual_hand = not configs.hand.mocap
 
     # Route grasp types to single-hand or dual-hand setup.
@@ -638,7 +722,8 @@ def Learning(params):
 
     # Build one output record with shared scene/object metadata.
     scene_path = _resolve_scene_path(raw_data["scene_path"])
-    metadata = _load_learning_metadata(scene_path, source_family)
+    source_family = _get_learning_source_family(hand_name)
+    metadata = _load_learning_metadata(scene_path, source_family, _get_learning_metadata_group(configs))
     scene_cfg = load_scene_cfg(scene_path)
     target_obj = scene_cfg["task"]["obj_name"]
     joint_names = metadata["joint_names"] if is_dual_hand else metadata["right_hand_joint_names"]
@@ -682,8 +767,9 @@ def LearningBatch(params):
     if "dummy_arm" not in hand_name:
         raise NotImplementedError(f"Learning conversion of both-hand grasps requires dummy_arm setup: {hand_name}")
 
-    source_family = hand_name.split("_")[-1]
+    source_family = _get_learning_source_family(hand_name)
     target_grasp_type = _get_target_grasp_type_from_exp_name(str(configs.exp_name))
+    metadata_group = _get_learning_metadata_group(configs)
 
     # Group by metadata signature so one IK solver can be reused for many files.
     grouped_records = {}
@@ -697,7 +783,7 @@ def LearningBatch(params):
             continue
 
         scene_path = _resolve_scene_path(raw_data["scene_path"])
-        metadata = _load_learning_metadata(scene_path, source_family)
+        metadata = _load_learning_metadata(scene_path, source_family, metadata_group)
         scene_cfg = load_scene_cfg(scene_path)
         target_obj = scene_cfg["task"]["obj_name"]
         new_data = _build_learning_new_data(
@@ -751,27 +837,73 @@ def LearningBatch(params):
 
         ik_retry_rounds = int(getattr(configs.task, "learning_ik_retry_rounds", 3))
         right_result = _solve_learning_batch_ik_with_retry(
-            solver, solver["wrist_body_names"][0], right_matrix, ref_configs, side_name="right", max_retry_rounds=ik_retry_rounds
+            solver,
+            solver["wrist_body_names"][0],
+            right_matrix,
+            ref_configs,
+            side_name="right",
+            max_retry_rounds=ik_retry_rounds,
+            allow_failure=True,
         )
         left_result = _solve_learning_batch_ik_with_retry(
-            solver, solver["wrist_body_names"][1], left_matrix, ref_configs, side_name="left", max_retry_rounds=ik_retry_rounds
+            solver,
+            solver["wrist_body_names"][1],
+            left_matrix,
+            ref_configs,
+            side_name="left",
+            max_retry_rounds=ik_retry_rounds,
+            allow_failure=True,
         )
 
         right_arm_batch = right_result["q"][:, solver["right_arm_indices"]].detach().cpu().numpy().astype(np.float32)
         left_arm_batch = left_result["q"][:, solver["left_arm_indices"]].detach().cpu().numpy().astype(np.float32)
+        right_success = right_result["success"].detach().cpu().numpy().astype(bool)
+        left_success = left_result["success"].detach().cpu().numpy().astype(bool)
 
         cursor = 0
         for record in records:
+            ik_failures = []
             for stage in LEARNING_STAGE_NAMES:
                 stage_data = record["stages"][stage]
-                record["new_data"][f"{stage}_qpos"] = _assemble_learning_dual_qpos(
-                    metadata,
-                    right_arm_batch[cursor],
-                    stage_data["right_joint"],
-                    left_arm_batch[cursor],
-                    stage_data["left_joint"],
-                )
+                if not right_success[cursor]:
+                    ik_failures.append(
+                        {
+                            "side": "right",
+                            "stage": stage,
+                            "target_pose": np.asarray(stage_data["right_pose"], dtype=np.float32),
+                        }
+                    )
+                if not left_success[cursor]:
+                    ik_failures.append(
+                        {
+                            "side": "left",
+                            "stage": stage,
+                            "target_pose": np.asarray(stage_data["left_pose"], dtype=np.float32),
+                        }
+                    )
                 cursor += 1
+
+            if len(ik_failures) > 0:
+                _mark_learning_ik_failed_record(record, metadata, ik_failures)
+                logging.warning(
+                    "Learning IK failed for %s; saving NaN qpos sentinel so evaluation counts it as failure. "
+                    "failures=%s",
+                    record["save_path"],
+                    [(failure["side"], failure["stage"]) for failure in ik_failures],
+                )
+            else:
+                stage_cursor = cursor - len(LEARNING_STAGE_NAMES)
+                for stage in LEARNING_STAGE_NAMES:
+                    stage_data = record["stages"][stage]
+                    record["new_data"][f"{stage}_qpos"] = _assemble_learning_dual_qpos(
+                        metadata,
+                        right_arm_batch[stage_cursor],
+                        stage_data["right_joint"],
+                        left_arm_batch[stage_cursor],
+                        stage_data["left_joint"],
+                    )
+                    stage_cursor += 1
+                record["new_data"]["format_ik_failed"] = False
 
             os.makedirs(os.path.dirname(record["save_path"]), exist_ok=True)
             np.save(record["save_path"], record["new_data"])

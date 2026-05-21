@@ -748,7 +748,10 @@ class BaseEval:
             eval_results["succ_flag"] = False
             eval_results["delta_pos"] = np.nan
             eval_results["delta_angle"] = np.nan
-            eval_results["eval_failure_reason"] = "nonfinite_qpos"
+            if bool(eval_results.get("format_ik_failed", False)):
+                eval_results["eval_failure_reason"] = "format_ik_failed"
+            else:
+                eval_results["eval_failure_reason"] = "nonfinite_qpos"
             eval_results["nonfinite_qpos_fields"] = list(self.nonfinite_qpos_fields)
             eval_results["grasp_type"] = self._determine_grasp_type()
             self._save_eval_results(eval_results)
