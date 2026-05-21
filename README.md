@@ -147,3 +147,20 @@ python src/main.py task=eval hand=<HAND> exp_name=<EXP_NAME>_<GRASP_TYPE> task.m
 
 # E.g., python src/main.py task=eval hand=dual_dummy_arm_leap exp_name=learn_both_full task.max_num=-1 task.debug_viewer=False 
 ```
+
+**Batch Processing**: process AnyScaleDexLearn samples for all five grasp types without modifying the BimanBODex
+workflow:
+
+```bash
+python script/process_learning_grasp_types.py \
+    --hand leap_sp \
+    --run-name leapspMulti_robotMultiHierar_debug0_step_050000 \
+    --learning-path ../AnyScaleDexLearn/output/leapspMulti_robotMultiHierar_debug0/tests/step_050000/leapspMulti \
+    --max-num 100 \
+    --dry-run
+```
+
+The script runs only `format` and `eval`. It sends every format job to the same AnyScaleDexLearn sample root with
+`task.data_name=Learning`; the grasp type suffix in `exp_name` lets the Learning formatter keep only matching
+`pred_grasp_type_id` samples. Single-hand types use `<hand>`, and bimanual types use the corresponding
+`dual_dummy_arm_<hand>` config.
