@@ -17,8 +17,8 @@
       "program": "${workspaceFolder}/src/main.py",
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
-      "args": ["task=eval", "exp_name=surface_sample_full_right_two", "hand=shadow", "task.debug_viewer=True",
-               "task.max_num=100", "task.start=0"]
+      "args": ["task=eval", "exp_name=multi_scale_2_DGN2k_1000_right_three", "hand=leap_sp", "task.debug_viewer=True",
+               "task.max_num=100", "task.start=0", "task.obj_scale=0.028"]
 
     },
     {
@@ -56,7 +56,7 @@
       "program": "${workspaceFolder}/src/main.py",
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
-      "args": ["task=eval", "hand=dual_dummy_arm_leap", "exp_name=learn_both_full", "task.max_num=-1", "task.debug_viewer=True"]
+      "args": ["task=eval", "hand=dual_dummy_arm_leap_sp", "exp_name=learn_debug0_both_full", "task.max_num=-1", "task.debug_viewer=True"]
 
     },
   ]

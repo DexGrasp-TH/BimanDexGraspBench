@@ -2,6 +2,7 @@ import os
 import sys
 from copy import deepcopy
 import logging
+from glob import glob
 
 import numpy as np
 import imageio
@@ -16,12 +17,114 @@ from util.file_util import load_json
 from .fc_metric import *
 
 
+def _path_has_object_info(obj_path):
+    """Check whether an object asset directory contains required object info.
+
+    Args:
+        obj_path: Candidate object asset directory.
+
+    Returns:
+        True when `info/simplified.json` exists under the candidate directory.
+    """
+    return os.path.exists(os.path.join(obj_path, "info/simplified.json"))
+
+
+def _candidate_anyscale_grasp_dataset_roots(saved_path):
+    """Collect possible local roots for the AnyScaleGrasp dataset.
+
+    Args:
+        saved_path: Original path stored in converted grasp data.
+
+    Returns:
+        Ordered list of candidate dataset roots. `AnyScaleGraspDataset` is tried
+        first, then the root embedded in saved paths, then common local mount roots.
+    """
+    candidates = []
+    env_root = os.environ.get("AnyScaleGraspDataset")
+    if env_root:
+        candidates.append(env_root)
+
+    marker = f"{os.sep}AnyScaleGrasp{os.sep}"
+    if marker in saved_path:
+        candidates.append(saved_path.split(marker, 1)[0] + f"{os.sep}AnyScaleGrasp")
+
+    common_patterns = [
+        "/data/dataset/AnyScaleGrasp",
+        "/data/*/dataset/AnyScaleGrasp",
+        "/media/*/*/dataset/AnyScaleGrasp",
+        "/mnt/*/dataset/AnyScaleGrasp",
+    ]
+    for pattern in common_patterns:
+        candidates.extend(sorted(glob(pattern)))
+
+    normalized_candidates = []
+    for candidate in candidates:
+        candidate = os.path.normpath(os.path.expanduser(str(candidate)))
+        if candidate not in normalized_candidates:
+            normalized_candidates.append(candidate)
+    return normalized_candidates
+
+
+def _candidate_object_paths_from_dataset_root(obj_path, dataset_root):
+    """Build object asset path candidates under one AnyScaleGrasp dataset root.
+
+    Args:
+        obj_path: Original object asset path stored in converted grasp data.
+        dataset_root: Candidate local AnyScaleGrasp dataset root.
+
+    Returns:
+        Candidate object asset directories under `dataset_root`.
+    """
+    candidates = []
+    marker = f"{os.sep}AnyScaleGrasp{os.sep}"
+    if marker in obj_path:
+        rel_path = obj_path.split(marker, 1)[1]
+        candidates.append(os.path.normpath(os.path.join(dataset_root, rel_path)))
+
+    object_marker = f"{os.sep}object{os.sep}"
+    if object_marker in obj_path:
+        rel_path = os.path.join("object", obj_path.split(object_marker, 1)[1])
+        candidates.append(os.path.normpath(os.path.join(dataset_root, rel_path)))
+
+    return candidates
+
+
+def resolve_portable_obj_path(obj_path):
+    """Resolve object asset path across machines with different dataset roots.
+
+    Args:
+        obj_path: Object asset directory stored in converted grasp data.
+
+    Returns:
+        Object asset directory resolved under the local AnyScaleGrasp dataset root
+        when possible.
+    """
+    obj_path = os.path.normpath(str(obj_path))
+    candidates = [obj_path]
+    for dataset_root in _candidate_anyscale_grasp_dataset_roots(obj_path):
+        candidates.extend(_candidate_object_paths_from_dataset_root(obj_path, dataset_root))
+
+    for candidate in dict.fromkeys(candidates):
+        if _path_has_object_info(candidate):
+            if candidate != obj_path:
+                logging.info("Resolved AnyScaleGrasp object path from %s to %s.", obj_path, candidate)
+            return candidate
+
+    for candidate in dict.fromkeys(candidates):
+        if os.path.exists(candidate):
+            if candidate != obj_path:
+                logging.info("Resolved existing AnyScaleGrasp object path from %s to %s.", obj_path, candidate)
+            return candidate
+    return obj_path
+
+
 class BaseEval:
     def __init__(self, input_npy_path, configs):
         self.input_npy_path = input_npy_path
         self.configs = configs
         self.grasp_data = np.load(input_npy_path, allow_pickle=True).item()
         self.original_grasp_data = deepcopy(self.grasp_data)
+        self.grasp_data["obj_path"] = resolve_portable_obj_path(self.grasp_data["obj_path"])
         self.mj_joint_names = None
         self.data2mj_indices = None
         self.nonfinite_qpos_fields = self._find_nonfinite_qpos_fields(self.grasp_data)
@@ -743,6 +846,9 @@ class BaseEval:
     def run(self):
 
         eval_results = deepcopy(self.original_grasp_data)
+        # Save the object path that was actually used for evaluation so downstream
+        # tools do not inherit a stale server-local dataset root.
+        eval_results["obj_path"] = self.grasp_data["obj_path"]
 
         if len(self.nonfinite_qpos_fields) > 0:
             eval_results["succ_flag"] = False
