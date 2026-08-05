@@ -47,7 +47,7 @@ GRASP_TYPE_NAMES = [name for name, _, _ in GRASP_TYPES]
 
 DEFAULT_ADDITIONAL_EVAL_HYDRA_ARGS = {
     "right_two": [
-        "task.pose_adjustment.squeeze_extrapolate_ratio=0.4", # 0.3
+        "task.pose_adjustment.squeeze_extrapolate_ratio=0.4",
     ],
     "right_three": [
         "task.pose_adjustment.squeeze_extrapolate_ratio=0.6",
