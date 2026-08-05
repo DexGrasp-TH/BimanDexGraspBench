@@ -158,6 +158,11 @@ python script/process_learning_grasp_types.py \
     --learning-path ../AnyScaleDexLearn/output/leapspMulti_robotMultiHierar_debug0/tests/step_050000/leapspMulti \
     --max-num 100 \
     --dry-run
+
+python script/process_learning_grasp_types.py \
+    --hand shadow \
+    --run-name shadowMulti_robotMultiHierar_human_0_step_050000 \
+    --learning-path ../AnyScaleDexLearn/output/shadowMulti_robotMultiHierar_human_0/tests/step_050000/shadowMulti
 ```
 
 The script runs only `format` and `eval`. It sends every format job to the same AnyScaleDexLearn sample root with

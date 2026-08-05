@@ -43,7 +43,7 @@ DEFAULT_PREGRASP_EVAL_HYDRA_ARGS = [
 
 DEFAULT_ADDITIONAL_EVAL_HYDRA_ARGS = {
     "right_two": [
-        "task.pose_adjustment.squeeze_extrapolate_ratio=0.3",
+        "task.pose_adjustment.squeeze_extrapolate_ratio=0.4",
     ],
     "right_three": [
         "task.pose_adjustment.squeeze_extrapolate_ratio=0.6",
@@ -69,6 +69,14 @@ ADDITIONAL_EVAL_HYDRA_ARGS = {
             "task.pose_adjustment.squeeze_extrapolate_ratio=0.8",
         ],
     },
+    # "shadow": {
+    #     "right_two": [
+    #         "task.pose_adjustment.squeeze_extrapolate_ratio=0.6",
+    #     ],
+    #     "right_three": [
+    #         "task.pose_adjustment.squeeze_extrapolate_ratio=0.8",
+    #     ],
+    # },
 }
 
 
