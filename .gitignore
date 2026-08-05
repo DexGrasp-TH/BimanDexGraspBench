@@ -1,8 +1,26 @@
-# .vscode*
+# Python
 __pycache__/
-*MUJOCO_LOG.TXT
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-output*
-assets/object
-debug*
-temp/
+# Local environments and editor settings
+.env
+.env.*
+!.env.example
+.venv/
+.DS_Store
+Thumbs.db
+
+# Project-local datasets and generated outputs
+/assets/object
+/output/
+/debug/
+/temp/
+/multirun/
+
+# Simulator and runtime logs
+MUJOCO_LOG.TXT
+*.log
