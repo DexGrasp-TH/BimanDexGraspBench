@@ -243,6 +243,8 @@ class ViewerBackendTest(unittest.TestCase):
 
         with mock.patch.object(viewer_util.importlib, "import_module", side_effect=modules.__getitem__):
             session = viewer_util.MjviserDebugViewerSession(config)
+            client = types.SimpleNamespace(camera=types.SimpleNamespace(position=None, look_at=None))
+            session.server.client_connect_callbacks[0](client)
             session.begin_grasp(0, 2, 3, "/input/first.npy")
             first_viewer = session.attach("model-1", "data-1", frame_sleep_seconds=0)
             with mock.patch.object(viewer_util.time, "sleep") as sleep:
@@ -256,6 +258,10 @@ class ViewerBackendTest(unittest.TestCase):
         self.assertIs(first_viewer, session)
         self.assertIs(second_viewer, session)
         self.assertEqual(len(FakeViserServer.instances), 1)
+        self.assertIsInstance(client.camera.position, np.ndarray)
+        self.assertEqual(client.camera.position.shape, (3,))
+        self.assertIsInstance(client.camera.look_at, np.ndarray)
+        self.assertEqual(client.camera.look_at.shape, (3,))
         self.assertEqual(len(FakeMjviserScene.instances), 2)
         self.assertEqual(server.scene.reset_count, 1)
         self.assertEqual(server.gui.reset_count, 1)

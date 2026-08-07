@@ -9,6 +9,8 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+import numpy as np
+
 
 SUPPORTED_DEBUG_VIEWER_BACKENDS = ("mjviser", "mujoco")
 
@@ -320,8 +322,8 @@ class MjviserDebugViewerSession:
     def _set_client_camera(self, client: Any) -> None:
         """Initialize one connected browser camera for the current scene."""
 
-        client.camera.position = [1.40953893, 0.0, -0.51303021]
-        client.camera.look_at = [0.0, 0.0, 0.0]
+        client.camera.position = np.array([1.40953893, 0.0, -0.51303021], dtype=np.float64)
+        client.camera.look_at = np.zeros(3, dtype=np.float64)
 
     def attach(self, model: Any, data: Any, frame_sleep_seconds: float) -> "MjviserDebugViewerSession":
         """Replace the current scene with a new model while keeping the server alive."""
