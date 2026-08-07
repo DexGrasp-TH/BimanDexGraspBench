@@ -119,9 +119,10 @@ def resolve_portable_obj_path(obj_path):
 
 
 class BaseEval:
-    def __init__(self, input_npy_path, configs):
+    def __init__(self, input_npy_path, configs, viewer_session=None):
         self.input_npy_path = input_npy_path
         self.configs = configs
+        self.viewer_session = viewer_session
         self.grasp_data = np.load(input_npy_path, allow_pickle=True).item()
         self.original_grasp_data = deepcopy(self.grasp_data)
         self.grasp_data["obj_path"] = resolve_portable_obj_path(self.grasp_data["obj_path"])
@@ -154,6 +155,8 @@ class BaseEval:
             friction_coef=getattr(configs.task, "sim_friction_coef", configs.task.miu_coef),
             debug_render=configs.task.debug_render,
             debug_viewer=configs.task.debug_viewer,
+            viewer_config=getattr(configs.task, "viewer", None),
+            viewer_session=self.viewer_session,
         )
 
         # convert the qpos to mujoco order
@@ -186,10 +189,14 @@ class BaseEval:
 
         self.mj_ho.reset_pose_qpos(self.grasp_data["pregrasp_qpos"], self.grasp_data["obj_pose"], set_ctrl=False)
         self.mj_ho._init_after_first_fk()  # for some property that needs to be initialized after first FK
-        self.mj_ho._init_viewer_and_render()
 
         if self.configs.task.debug_viewer or self.configs.task.debug_render:
-            with open("debug.xml", "w") as f:
+            debug_xml_path = self.input_npy_path.replace(
+                self.configs.grasp_dir,
+                self.configs.task.debug_dir,
+            ).replace(".npy", ".xml")
+            os.makedirs(os.path.dirname(debug_xml_path), exist_ok=True)
+            with open(debug_xml_path, "w") as f:
                 f.write(self.mj_ho.spec.to_xml())
 
         return
@@ -844,7 +851,6 @@ class BaseEval:
         return result
 
     def run(self):
-
         eval_results = deepcopy(self.original_grasp_data)
         # Save the object path that was actually used for evaluation so downstream
         # tools do not inherit a stale server-local dataset root.
@@ -863,50 +869,56 @@ class BaseEval:
             self._save_eval_results(eval_results)
             return
 
-        self._copy_object_physics_to_eval_results(eval_results)
+        try:
+            self.mj_ho._init_viewer_and_render()
+            self.mj_ho.wait_for_viewer_client()
+            self._copy_object_physics_to_eval_results(eval_results)
 
-        if self.configs.task.pene_contact_metrics is not None:
-            (
-                eval_results["ho_pene"],
-                eval_results["self_pene"],
-                eval_results["contact_num"],
-                eval_results["contact_dist"],
-                eval_results["contact_consis"],
-                self_signed_distance,
-            ) = self._eval_pene_and_contact()
-            eval_results.update(self_signed_distance)
+            if self.configs.task.pene_contact_metrics is not None:
+                (
+                    eval_results["ho_pene"],
+                    eval_results["self_pene"],
+                    eval_results["contact_num"],
+                    eval_results["contact_dist"],
+                    eval_results["contact_consis"],
+                    self_signed_distance,
+                ) = self._eval_pene_and_contact()
+                eval_results.update(self_signed_distance)
 
-        if self.configs.task.analytic_fc_metrics is not None:
-            fc_metric_results = self._eval_analytic_fc_metric()
-            for k, v in fc_metric_results.items():
-                eval_results[k] = v
+            if self.configs.task.analytic_fc_metrics is not None:
+                fc_metric_results = self._eval_analytic_fc_metric()
+                for k, v in fc_metric_results.items():
+                    eval_results[k] = v
 
-        if self.configs.task.simulation_metrics is not None:
-            (
-                eval_results["succ_flag"],
-                eval_results["delta_pos"],
-                eval_results["delta_angle"],
-            ) = self._eval_simulate_under_extforce()
+            if self.configs.task.simulation_metrics is not None:
+                (
+                    eval_results["succ_flag"],
+                    eval_results["delta_pos"],
+                    eval_results["delta_angle"],
+                ) = self._eval_simulate_under_extforce()
 
-        self.mj_ho.close_view_and_render()
+            # Hold before pose extraction resets MuJoCo data away from the final simulated frame.
+            self.mj_ho.hold_viewer_on_finish()
 
-        # Determine grasp_type before saving
-        eval_results["grasp_type"] = self._determine_grasp_type()
-        # Keep saved qpos consistent with the poses that were actually evaluated.
-        self._copy_adjusted_qpos_to_eval_results(eval_results)
-        # Extract and combine robot poses
-        robot_poses = self._extract_robot_poses(eval_results)
-        eval_results.update(robot_poses)
+            # Determine grasp_type before saving
+            eval_results["grasp_type"] = self._determine_grasp_type()
+            # Keep saved qpos consistent with the poses that were actually evaluated.
+            self._copy_adjusted_qpos_to_eval_results(eval_results)
+            # Extract and combine robot poses
+            robot_poses = self._extract_robot_poses(eval_results)
+            eval_results.update(robot_poses)
 
-        self._save_eval_results(eval_results)
+            self._save_eval_results(eval_results)
 
-        # Save success data symlink after eval_results is saved
-        if self.configs.task.simulation_metrics is not None and eval_results["succ_flag"]:
-            succ_npy_path = self.input_npy_path.replace(self.configs.grasp_dir, self.configs.succ_dir)
-            if not os.path.exists(succ_npy_path):
-                eval_npy_path = self.input_npy_path.replace(self.configs.grasp_dir, self.configs.eval_dir)
-                os.makedirs(os.path.dirname(succ_npy_path), exist_ok=True)
-                os.system(f"ln -s {os.path.relpath(eval_npy_path, os.path.dirname(succ_npy_path))} {succ_npy_path}")
+            # Save success data symlink after eval_results is saved
+            if self.configs.task.simulation_metrics is not None and eval_results["succ_flag"]:
+                succ_npy_path = self.input_npy_path.replace(self.configs.grasp_dir, self.configs.succ_dir)
+                if not os.path.exists(succ_npy_path):
+                    eval_npy_path = self.input_npy_path.replace(self.configs.grasp_dir, self.configs.eval_dir)
+                    os.makedirs(os.path.dirname(succ_npy_path), exist_ok=True)
+                    os.system(f"ln -s {os.path.relpath(eval_npy_path, os.path.dirname(succ_npy_path))} {succ_npy_path}")
+        finally:
+            self.mj_ho.close_view_and_render()
 
         return
 

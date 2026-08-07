@@ -1,15 +1,14 @@
 import os
 import pdb
-import time
 import logging
 
 import trimesh
 import numpy as np
 import mujoco
-import mujoco.viewer
 import transforms3d.quaternions as tq
 
 from .rot_util import interplote_pose, interplote_qpos
+from .viewer_util import create_debug_viewer
 
 
 class MjHO:
@@ -30,6 +29,8 @@ class MjHO:
         has_floor_z0,
         debug_render=False,
         debug_viewer=False,
+        viewer_config=None,
+        viewer_session=None,
     ):
         self.hand_mocap = hand_mocap
         self.spec = mujoco.MjSpec()
@@ -40,6 +41,11 @@ class MjHO:
         self.spec.option.disableflags = mujoco.mjtDisableBit.mjDSBL_GRAVITY
         self.b_debug_render = debug_render
         self.b_debug_viewer = debug_viewer
+        self.viewer_config = viewer_config
+        self.viewer_session = viewer_session
+        self.debug_viewer = None
+        self.debug_render = None
+        self.debug_images = []
         self.skipped_tiny_object_meshes = []
         if self.b_debug_render or self.b_debug_viewer:
             self.spec.add_texture(
@@ -107,26 +113,47 @@ class MjHO:
         self._qpos2ctrl_matrix = qpos2ctrl_matrix[..., :-6]
 
     def _init_viewer_and_render(self):
-        self.debug_viewer = None
-        self.debug_render = None
-        if self.b_debug_viewer:
-            self.debug_viewer = mujoco.viewer.launch_passive(self.model, self.data)
+        try:
+            if self.b_debug_viewer:
+                if self.viewer_session is None:
+                    self.debug_viewer = create_debug_viewer(
+                        self.model,
+                        self.data,
+                        self.viewer_config,
+                        frame_sleep_seconds=self.spec.option.timestep,
+                    )
+                else:
+                    self.debug_viewer = self.viewer_session.attach(
+                        self.model,
+                        self.data,
+                        frame_sleep_seconds=self.spec.option.timestep,
+                    )
 
-            self.debug_viewer.cam.lookat[:] = [0.5, 0.0, -0.2]
-            self.debug_viewer.cam.distance = 1.5  # 相机与注视点的距离
-            self.debug_viewer.cam.azimuth = 180  # 水平旋转角度，单位度
-            self.debug_viewer.cam.elevation = -20  # 垂直旋转角度，单位度
-
-        if self.b_debug_render:
-            self.debug_render = mujoco.Renderer(self.model, 480, 640)
-            self.debug_options = mujoco.MjvOption()
-            mujoco.mjv_defaultOption(self.debug_options)
-            self.debug_options.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = True
-            self.debug_options.flags[mujoco.mjtVisFlag.mjVIS_CONTACTFORCE] = True
-            self.debug_options.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = False
-            self.debug_images = []
+            if self.b_debug_render:
+                self.debug_render = mujoco.Renderer(self.model, 480, 640)
+                self.debug_options = mujoco.MjvOption()
+                mujoco.mjv_defaultOption(self.debug_options)
+                self.debug_options.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = True
+                self.debug_options.flags[mujoco.mjtVisFlag.mjVIS_CONTACTFORCE] = True
+                self.debug_options.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = False
+                self.debug_images = []
+        except Exception:
+            self.close_view_and_render()
+            raise
 
         return
+
+    def wait_for_viewer_client(self):
+        """Wait for an interactive viewer client when required by the selected backend."""
+
+        if self.debug_viewer is not None:
+            self.debug_viewer.wait_for_client()
+
+    def hold_viewer_on_finish(self):
+        """Keep the final simulated frame visible according to viewer configuration."""
+
+        if self.debug_viewer is not None:
+            self.debug_viewer.hold_on_finish()
 
     def reset(self):
         self.ext_force_on_obj = None
@@ -611,7 +638,6 @@ class MjHO:
 
         if self.debug_viewer is not None:
             self.debug_viewer.sync()
-            time.sleep(self.spec.option.timestep)
 
         return
 
@@ -621,9 +647,12 @@ class MjHO:
 
     def close_view_and_render(self):
         if self.debug_viewer is not None:
-            self.debug_viewer.close()
+            if self.viewer_session is None:
+                self.debug_viewer.close()
+            self.debug_viewer = None
         if self.debug_render is not None:
             self.debug_render.close()
+            self.debug_render = None
 
 
 class RobotKinematics:
