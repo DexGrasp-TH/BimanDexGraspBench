@@ -92,7 +92,7 @@ Eval visualization is disabled by default. When `task.debug_viewer=True`, the de
 [mjviser](https://github.com/mujocolab/mjviser), which serves a read-only browser visualization while the existing
 Bench loop remains responsible for every MuJoCo simulation step.
 
-Viewer mode accepts exactly one grasp per run. Use `task.start` and `task.end` to select it:
+Viewer mode accepts exactly one grasp per run by default. Use `task.start` and `task.end` to select it:
 
 ```bash
 python src/main.py task=eval hand=<HAND> exp_name=<EXP_NAME> \
@@ -133,6 +133,20 @@ python src/main.py task=eval hand=<HAND> exp_name=<EXP_NAME> \
     task.debug_viewer=True task.viewer.wait_for_client=False task.viewer.hold_on_finish=False \
     task.start=<INDEX> task.end=<INDEX+1>
 ```
+
+To play several grasps continuously in one browser connection, enable the mjviser playlist and select an index range:
+
+```bash
+python src/main.py task=eval hand=<HAND> exp_name=<EXP_NAME> \
+    task.debug_viewer=True task.viewer.playlist.enabled=True \
+    task.viewer.playlist.interval_seconds=1.0 \
+    task.start=<START> task.end=<END>
+```
+
+The Viser server stays on the same host and port for the whole playlist. Each grasp still gets an independent MuJoCo
+model, data, and Bench evaluator; only the browser scene is replaced. The server waits for a client before the first
+grasp, keeps each intermediate final frame for `interval_seconds`, and applies `hold_on_finish` only after the last
+grasp. Playlist mode currently supports only `task.viewer.backend=mjviser`; the native MuJoCo GUI remains single-grasp.
 
 `mjviser==0.0.14` requires `mujoco>=3.6.0`. Keep the versions in the installation instructions pinned and record the
 MuJoCo version in experiment evidence; installing an unpinned mjviser may silently select a newer physics engine.

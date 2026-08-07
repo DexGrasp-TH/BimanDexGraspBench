@@ -43,6 +43,9 @@ class FakeViserServer:
         self.client_snapshots = []
         self.clients = {}
         self.stop_count = 0
+        self.scene = FakeSceneApi()
+        self.gui = FakeGuiApi()
+        self.client_connect_callbacks = []
         self._websock_server = types.SimpleNamespace(_server_thread=FakeServerThread())
         self.__class__.instances.append(self)
 
@@ -56,6 +59,31 @@ class FakeViserServer:
 
     def stop(self):
         self.stop_count += 1
+
+    def on_client_connect(self, callback):
+        self.client_connect_callbacks.append(callback)
+        return callback
+
+
+class FakeSceneApi:
+    def __init__(self):
+        self.reset_count = 0
+
+    def reset(self):
+        self.reset_count += 1
+
+
+class FakeGuiApi:
+    def __init__(self):
+        self.reset_count = 0
+        self.markdown = []
+
+    def reset(self):
+        self.reset_count += 1
+
+    def add_markdown(self, content, **kwargs):
+        self.markdown.append((content, kwargs))
+        return types.SimpleNamespace(content=content)
 
 
 class FakeServerThread:
@@ -98,6 +126,8 @@ class ViewerConfigTest(unittest.TestCase):
         self.assertEqual(config.port, 8080)
         self.assertTrue(config.wait_for_client)
         self.assertTrue(config.hold_on_finish)
+        self.assertFalse(config.playlist_enabled)
+        self.assertEqual(config.playlist_interval_seconds, 1.0)
 
     def test_invalid_backend_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "Unsupported debug viewer backend"):
@@ -110,6 +140,14 @@ class ViewerConfigTest(unittest.TestCase):
             viewer_util.normalize_debug_viewer_config({"port": 70000})
         with self.assertRaisesRegex(ValueError, "wait_for_client"):
             viewer_util.normalize_debug_viewer_config({"wait_for_client": "false"})
+        with self.assertRaisesRegex(ValueError, "playlist.interval_seconds"):
+            viewer_util.normalize_debug_viewer_config({"playlist": {"interval_seconds": -1}})
+        with self.assertRaisesRegex(ValueError, "finite"):
+            viewer_util.normalize_debug_viewer_config({"playlist": {"interval_seconds": float("nan")}})
+        with self.assertRaisesRegex(ValueError, "supported only"):
+            viewer_util.normalize_debug_viewer_config(
+                {"backend": "mujoco", "playlist": {"enabled": True}}
+            )
 
 
 class ViewerBackendTest(unittest.TestCase):
@@ -190,6 +228,79 @@ class ViewerBackendTest(unittest.TestCase):
         with mock.patch.object(viewer_util.importlib, "import_module", side_effect=ImportError("missing")):
             with self.assertRaisesRegex(RuntimeError, "mujoco==3.6.0"):
                 viewer_util.create_debug_viewer(model="model", data="data", config={"backend": "mjviser"})
+
+    def test_playlist_session_reuses_server_and_resets_scene_between_models(self):
+        modules = {
+            "viser": types.SimpleNamespace(ViserServer=FakeViserServer),
+            "mjviser": types.SimpleNamespace(ViserMujocoScene=FakeMjviserScene),
+        }
+        config = {
+            "backend": "mjviser",
+            "wait_for_client": False,
+            "hold_on_finish": False,
+            "playlist": {"enabled": True, "interval_seconds": 0.25},
+        }
+
+        with mock.patch.object(viewer_util.importlib, "import_module", side_effect=modules.__getitem__):
+            session = viewer_util.MjviserDebugViewerSession(config)
+            session.begin_grasp(0, 2, 3, "/input/first.npy")
+            first_viewer = session.attach("model-1", "data-1", frame_sleep_seconds=0)
+            with mock.patch.object(viewer_util.time, "sleep") as sleep:
+                session.hold_on_finish()
+            session.begin_grasp(1, 2, 7, "/input/second.npy")
+            second_viewer = session.attach("model-2", "data-2", frame_sleep_seconds=0)
+            session.hold_on_finish()
+            session.close()
+
+        server = FakeViserServer.instances[0]
+        self.assertIs(first_viewer, session)
+        self.assertIs(second_viewer, session)
+        self.assertEqual(len(FakeViserServer.instances), 1)
+        self.assertEqual(len(FakeMjviserScene.instances), 2)
+        self.assertEqual(server.scene.reset_count, 1)
+        self.assertEqual(server.gui.reset_count, 1)
+        self.assertEqual(len(server.gui.markdown), 2)
+        self.assertIn("Grasp 2/2", server.gui.markdown[-1][0])
+        sleep.assert_called_once_with(0.25)
+        self.assertEqual(server.stop_count, 1)
+
+    def test_playlist_waits_for_client_only_once(self):
+        modules = {
+            "viser": types.SimpleNamespace(ViserServer=FakeViserServer),
+            "mjviser": types.SimpleNamespace(ViserMujocoScene=FakeMjviserScene),
+        }
+        config = {"backend": "mjviser", "playlist": {"enabled": True}}
+
+        with mock.patch.object(viewer_util.importlib, "import_module", side_effect=modules.__getitem__):
+            session = viewer_util.MjviserDebugViewerSession(config)
+
+        session.server.client_snapshots = [{}, {1: object()}]
+        with mock.patch.object(viewer_util.time, "sleep") as sleep:
+            session.wait_for_client()
+            session.wait_for_client()
+        sleep.assert_called_once_with(0.1)
+        session.close()
+
+    def test_playlist_clears_partial_scene_when_attach_fails(self):
+        scene_factory = mock.Mock(side_effect=RuntimeError("scene failed"))
+        modules = {
+            "viser": types.SimpleNamespace(ViserServer=FakeViserServer),
+            "mjviser": types.SimpleNamespace(ViserMujocoScene=scene_factory),
+        }
+        config = {"backend": "mjviser", "playlist": {"enabled": True}}
+
+        with mock.patch.object(viewer_util.importlib, "import_module", side_effect=modules.__getitem__):
+            session = viewer_util.MjviserDebugViewerSession(config)
+            session.begin_grasp(0, 1, 0, "/input/grasp.npy")
+            with self.assertRaisesRegex(RuntimeError, "scene failed"):
+                session.attach("model", "data", frame_sleep_seconds=0)
+
+        server = FakeViserServer.instances[0]
+        self.assertEqual(server.scene.reset_count, 1)
+        self.assertEqual(server.gui.reset_count, 1)
+        self.assertIsNone(session.scene)
+        self.assertIsNone(session.data)
+        session.close()
 
 
 if __name__ == "__main__":

@@ -119,9 +119,10 @@ def resolve_portable_obj_path(obj_path):
 
 
 class BaseEval:
-    def __init__(self, input_npy_path, configs):
+    def __init__(self, input_npy_path, configs, viewer_session=None):
         self.input_npy_path = input_npy_path
         self.configs = configs
+        self.viewer_session = viewer_session
         self.grasp_data = np.load(input_npy_path, allow_pickle=True).item()
         self.original_grasp_data = deepcopy(self.grasp_data)
         self.grasp_data["obj_path"] = resolve_portable_obj_path(self.grasp_data["obj_path"])
@@ -155,6 +156,7 @@ class BaseEval:
             debug_render=configs.task.debug_render,
             debug_viewer=configs.task.debug_viewer,
             viewer_config=getattr(configs.task, "viewer", None),
+            viewer_session=self.viewer_session,
         )
 
         # convert the qpos to mujoco order

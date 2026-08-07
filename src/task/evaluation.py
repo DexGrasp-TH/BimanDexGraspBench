@@ -8,7 +8,7 @@ import numpy as np
 from tqdm import tqdm
 
 from .eval_func import *
-from util.viewer_util import normalize_debug_viewer_config
+from util.viewer_util import MjviserDebugViewerSession, normalize_debug_viewer_config
 
 
 def normalize_eval_index_range(input_items, start_index, end_index):
@@ -55,6 +55,7 @@ def filter_input_paths_by_obj_scale(input_path_lst, target_obj_scale):
 
 def safe_eval_one(params):
     input_npy_path, configs = params[0], params[1]
+    viewer_session = params[2] if len(params) > 2 else None
     eval_runner = None
     try:
         if configs.hand.mocap:
@@ -62,7 +63,7 @@ def safe_eval_one(params):
         else:
             eval_func_name = f"{configs.setting}ArmEval"
 
-        eval_runner = eval(eval_func_name)(input_npy_path, configs)
+        eval_runner = eval(eval_func_name)(input_npy_path, configs, viewer_session=viewer_session)
         eval_runner.run()
         skipped_tiny_meshes = []
         if getattr(eval_runner, "mj_ho", None) is not None:
@@ -158,36 +159,56 @@ def task_eval(configs):
     if len(input_path_lst) == 0:
         return
 
-    if configs.task.debug_viewer and len(input_path_lst) != 1:
+    playlist_enabled = viewer_config is not None and viewer_config.playlist_enabled
+    if configs.task.debug_viewer and not playlist_enabled and len(input_path_lst) != 1:
         raise ValueError(
             "Debug viewer mode supports exactly one grasp per run. "
-            "Use task.start=<INDEX> task.end=<INDEX+1> to select one grasp."
+            "Use task.start=<INDEX> task.end=<INDEX+1> to select one grasp, or enable "
+            "task.viewer.playlist.enabled=true for continuous mjviser playback."
         )
     if viewer_config is not None:
         logging.info(
-            "Use debug viewer backend=%s host=%s port=%d.",
+            "Use debug viewer backend=%s host=%s port=%d playlist=%s.",
             viewer_config.backend,
             viewer_config.host,
             viewer_config.port,
+            viewer_config.playlist_enabled,
         )
 
     enable_tqdm = bool(getattr(configs.task, "tqdm", True))
     iterable_params = zip(input_path_lst, [configs] * len(input_path_lst))
     progress_desc = "Evaluating grasps"
-    if configs.task.debug_viewer or configs.task.debug_render:
-        enable_tqdm = enable_tqdm and not bool(configs.task.debug_viewer)
-        # Debug rendering runs serially. Viewer mode prints each grasp explicitly because tqdm is disabled.
-        iterator = tqdm(iterable_params, total=len(input_path_lst), desc=progress_desc, disable=not enable_tqdm)
-        results = []
-        for selected_index, ip in enumerate(iterator):
-            if configs.task.debug_viewer:
-                print(f"Evaluate grasp index {input_index_lst[selected_index]}: {ip[0]}", flush=True)
-            results.append(safe_eval_one(ip))
-    else:
-        with multiprocessing.Pool(processes=configs.n_worker) as pool:
-            result_iter = pool.imap_unordered(safe_eval_one, iterable_params)
-            # Multiprocessing progress advances when worker jobs finish.
-            results = list(tqdm(result_iter, total=len(input_path_lst), desc=progress_desc, disable=not enable_tqdm))
+    viewer_session = None
+    try:
+        if playlist_enabled:
+            viewer_session = MjviserDebugViewerSession(viewer_config)
+
+        if configs.task.debug_viewer or configs.task.debug_render:
+            enable_tqdm = enable_tqdm and not bool(configs.task.debug_viewer)
+            # Debug rendering runs serially. Viewer mode prints each grasp explicitly because tqdm is disabled.
+            iterator = tqdm(iterable_params, total=len(input_path_lst), desc=progress_desc, disable=not enable_tqdm)
+            results = []
+            for selected_position, ip in enumerate(iterator):
+                if configs.task.debug_viewer:
+                    print(f"Evaluate grasp index {input_index_lst[selected_position]}: {ip[0]}", flush=True)
+                eval_params = ip
+                if viewer_session is not None:
+                    viewer_session.begin_grasp(
+                        sequence_position=selected_position,
+                        sequence_total=len(input_path_lst),
+                        input_index=input_index_lst[selected_position],
+                        input_path=ip[0],
+                    )
+                    eval_params = (ip[0], ip[1], viewer_session)
+                results.append(safe_eval_one(eval_params))
+        else:
+            with multiprocessing.Pool(processes=configs.n_worker) as pool:
+                result_iter = pool.imap_unordered(safe_eval_one, iterable_params)
+                # Multiprocessing progress advances when worker jobs finish.
+                results = list(tqdm(result_iter, total=len(input_path_lst), desc=progress_desc, disable=not enable_tqdm))
+    finally:
+        if viewer_session is not None:
+            viewer_session.close()
 
     grasp_lst = glob(os.path.join(configs.grasp_dir, "**/*.npy"), recursive=True)
     succ_lst = glob(os.path.join(configs.succ_dir, "**/*.npy"), recursive=True)

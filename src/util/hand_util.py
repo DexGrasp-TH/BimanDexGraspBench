@@ -30,6 +30,7 @@ class MjHO:
         debug_render=False,
         debug_viewer=False,
         viewer_config=None,
+        viewer_session=None,
     ):
         self.hand_mocap = hand_mocap
         self.spec = mujoco.MjSpec()
@@ -41,6 +42,7 @@ class MjHO:
         self.b_debug_render = debug_render
         self.b_debug_viewer = debug_viewer
         self.viewer_config = viewer_config
+        self.viewer_session = viewer_session
         self.debug_viewer = None
         self.debug_render = None
         self.debug_images = []
@@ -113,12 +115,19 @@ class MjHO:
     def _init_viewer_and_render(self):
         try:
             if self.b_debug_viewer:
-                self.debug_viewer = create_debug_viewer(
-                    self.model,
-                    self.data,
-                    self.viewer_config,
-                    frame_sleep_seconds=self.spec.option.timestep,
-                )
+                if self.viewer_session is None:
+                    self.debug_viewer = create_debug_viewer(
+                        self.model,
+                        self.data,
+                        self.viewer_config,
+                        frame_sleep_seconds=self.spec.option.timestep,
+                    )
+                else:
+                    self.debug_viewer = self.viewer_session.attach(
+                        self.model,
+                        self.data,
+                        frame_sleep_seconds=self.spec.option.timestep,
+                    )
 
             if self.b_debug_render:
                 self.debug_render = mujoco.Renderer(self.model, 480, 640)
@@ -638,7 +647,8 @@ class MjHO:
 
     def close_view_and_render(self):
         if self.debug_viewer is not None:
-            self.debug_viewer.close()
+            if self.viewer_session is None:
+                self.debug_viewer.close()
             self.debug_viewer = None
         if self.debug_render is not None:
             self.debug_render.close()

@@ -23,6 +23,9 @@ viewer:
   port: 8080
   wait_for_client: True  # Avoid finishing the grasp motion before the browser connects.
   hold_on_finish: True  # Keep the final frame until the client disconnects or Ctrl+C is pressed.
+  playlist:
+    enabled: False  # Keep single-grasp viewer behavior unless continuous playback is explicitly requested.
+    interval_seconds: 1.0  # Time to keep each non-final grasp's last frame before loading the next scene.
 debug_dir: ${save_dir}/debug
 tqdm: True
 
