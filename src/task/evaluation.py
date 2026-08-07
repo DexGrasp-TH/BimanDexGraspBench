@@ -8,6 +8,7 @@ import numpy as np
 from tqdm import tqdm
 
 from .eval_func import *
+from util.viewer_util import normalize_debug_viewer_config
 
 
 def normalize_eval_index_range(input_items, start_index, end_index):
@@ -117,6 +118,10 @@ def task_eval(configs):
         or configs.task.analytic_fc_metrics is not None
         or configs.task.pene_contact_metrics is not None
     ), "You should at least evaluate one kind of metrics"
+    viewer_config = None
+    if configs.task.debug_viewer:
+        viewer_config = normalize_debug_viewer_config(getattr(configs.task, "viewer", None))
+
     input_path_lst = glob(os.path.join(configs.grasp_dir, "**/*.npy"), recursive=True)
     init_num = len(input_path_lst)
 
@@ -152,6 +157,19 @@ def task_eval(configs):
 
     if len(input_path_lst) == 0:
         return
+
+    if configs.task.debug_viewer and len(input_path_lst) != 1:
+        raise ValueError(
+            "Debug viewer mode supports exactly one grasp per run. "
+            "Use task.start=<INDEX> task.end=<INDEX+1> to select one grasp."
+        )
+    if viewer_config is not None:
+        logging.info(
+            "Use debug viewer backend=%s host=%s port=%d.",
+            viewer_config.backend,
+            viewer_config.host,
+            viewer_config.port,
+        )
 
     enable_tqdm = bool(getattr(configs.task, "tqdm", True))
     iterable_params = zip(input_path_lst, [configs] * len(input_path_lst))

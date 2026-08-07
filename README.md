@@ -25,8 +25,9 @@ Modified from [DexGraspBench](https://github.com/JYChen18/DexGraspBench) to enab
     pip install numpy==1.26.4
     conda install pytorch==2.2.2 pytorch-cuda=12.1 -c pytorch -c nvidia 
     pip install mkl==2024.0.0
-    pip install mujoco==3.3.2
-    pip install trimesh
+    pip install mujoco==3.6.0
+    pip install mjviser==0.0.14 viser==1.0.27 pillow==12.2.0
+    pip install trimesh==4.11.5
     pip install hydra-core
     pip install transforms3d
     pip install matplotlib
@@ -84,6 +85,57 @@ $ python src/main.py task=eval exp_name=minitest_right_full hand=shadow task.deb
 $ python src/main.py task=format exp_name=minitest_both_full hand=dual_dummy_arm_shadow task.data_name=BimanBODex task.max_num=-1 task.data_path=../BimanBODex/src/curobo/content/assets/output/sim_dual_dummy_arm_shadow/tabletop_full/minitest/graspdata
 $ python src/main.py task=eval exp_name=minitest_both_full hand=dual_dummy_arm_shadow task.debug_viewer=False task.max_num=-1 n_worker=6
 ```
+
+### Debug Visualization on a Server
+
+Eval visualization is disabled by default. When `task.debug_viewer=True`, the default backend is
+[mjviser](https://github.com/mujocolab/mjviser), which serves a read-only browser visualization while the existing
+Bench loop remains responsible for every MuJoCo simulation step.
+
+Viewer mode accepts exactly one grasp per run. Use `task.start` and `task.end` to select it:
+
+```bash
+python src/main.py task=eval hand=<HAND> exp_name=<EXP_NAME> \
+    task.debug_viewer=True task.start=<INDEX> task.end=<INDEX+1>
+```
+
+By default, mjviser listens only on `127.0.0.1:8080`, waits for a browser connection before starting the motion, and
+keeps the final frame visible until the browser disconnects or Ctrl+C is pressed. Forward the port from your local
+machine before opening `http://127.0.0.1:8080`:
+
+```bash
+ssh -L 8080:127.0.0.1:8080 <server>
+```
+
+Use another port when 8080 is occupied:
+
+```bash
+python src/main.py task=eval hand=<HAND> exp_name=<EXP_NAME> \
+    task.debug_viewer=True task.viewer.port=8081 \
+    task.start=<INDEX> task.end=<INDEX+1>
+```
+
+Do not bind `task.viewer.host=0.0.0.0` on a shared server unless network access is independently restricted. The Viser
+server does not provide project-level authentication.
+
+The native MuJoCo GUI remains available as a fallback:
+
+```bash
+python src/main.py task=eval hand=<HAND> exp_name=<EXP_NAME> \
+    task.debug_viewer=True task.viewer.backend=mujoco \
+    task.start=<INDEX> task.end=<INDEX+1>
+```
+
+For automated headless smoke checks, disable the interactive waits explicitly:
+
+```bash
+python src/main.py task=eval hand=<HAND> exp_name=<EXP_NAME> \
+    task.debug_viewer=True task.viewer.wait_for_client=False task.viewer.hold_on_finish=False \
+    task.start=<INDEX> task.end=<INDEX+1>
+```
+
+`mjviser==0.0.14` requires `mujoco>=3.6.0`. Keep the versions in the installation instructions pinned and record the
+MuJoCo version in experiment evidence; installing an unpinned mjviser may silently select a newer physics engine.
 
 **Batch Processing**: process all BimanBODex tabletop grasp types (`right_two`, `right_three`, `right_full`,
 `both_three`, `both_full`) with `script/process_all_grasp_types.py`.
